@@ -33,12 +33,22 @@ import {
 import Board from './components/Board';
 import { analyze, BOARD_PADDING_M, Level, SurfaceType } from './analysis';
 import { CAMPGROUNDS, PLACE_TYPE_INFO, REGION_GROUPS, RegionGroup } from './campgrounds';
-import { GEAR_PRESETS, GearPreset, gearEmoji, PlacedItem } from './presets';
+import { GEAR_PRESETS, GEAR_TAB_LABEL, GearPreset, GearTab, gearEmoji, gearMatches, PlacedItem, tabOf } from './presets';
 import { DayForecast, fetchForecast, Place, searchPlaces, weatherCodeInfo, windFromLabel } from './weather';
 
 type Step = 1 | 2 | 3 | 4;
 type WeatherStatus = 'idle' | 'loading' | 'ok' | 'error';
-type GearTab = 'tent' | 'tarp' | 'etc';
+const CUSTOM_GEAR_KEY = 'tentris-custom-gear';
+
+const loadCustomGear = (): GearPreset[] => {
+  try {
+    const raw = localStorage.getItem(CUSTOM_GEAR_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
 
 const STEPS: { n: Step; label: string }[] = [
   { n: 1, label: '장소·날짜' },
@@ -174,6 +184,9 @@ export default function App() {
   const [items, setItems] = useState<PlacedItem[]>(initialItems);
   const [selectedUid, setSelectedUid] = useState<string | null>('init-tent');
   const [gearTab, setGearTab] = useState<GearTab>('tent');
+  const [gearGroup, setGearGroup] = useState('전체');
+  const [gearQuery, setGearQuery] = useState('');
+  const [customGear, setCustomGear] = useState<GearPreset[]>(loadCustomGear);
   const [sunHour, setSunHour] = useState(14);
   const [customName, setCustomName] = useState('');
   const [customWidthM, setCustomWidthM] = useState(3.2);
@@ -262,19 +275,40 @@ export default function App() {
   const addCustomTent = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customName.trim()) return;
-    addGear({
-      id: 'custom-gear',
+    const preset: GearPreset = {
+      id: `custom-${Date.now()}`,
       brand: '직접 입력',
       name: customName.trim(),
       category: 'tent',
-      widthM: customWidthM,
-      lengthM: customLengthM,
+      group: '내 텐트',
+      keywords: '내 직접 저장',
+      widthM: clamp(customWidthM || 0, 0.5, 12),
+      lengthM: clamp(customLengthM || 0, 0.5, 12),
       ropeMarginM: 0.9,
       windLimitMs: 12,
       color: '#6366f1',
       badge: '⛺ 내 텐트',
-    });
+    };
+    // 브라우저에 저장해 두면 다음에 열어도 목록에 남아 있어요.
+    const next = [preset, ...customGear];
+    setCustomGear(next);
+    try {
+      localStorage.setItem(CUSTOM_GEAR_KEY, JSON.stringify(next));
+    } catch {
+      /* 저장 공간이 막혀 있어도 이번 화면에서는 쓸 수 있어요 */
+    }
+    addGear(preset);
     setCustomName('');
+  };
+
+  const removeCustomGear = (id: string) => {
+    const next = customGear.filter((g) => g.id !== id);
+    setCustomGear(next);
+    try {
+      localStorage.setItem(CUSTOM_GEAR_KEY, JSON.stringify(next));
+    } catch {
+      /* noop */
+    }
   };
 
   const updateSelected = (fn: (it: PlacedItem) => PlacedItem) => {
@@ -543,9 +577,13 @@ export default function App() {
   );
 
   // ---------- 3단계 화면 ----------
-  const gearList = GEAR_PRESETS.filter((g) =>
-    gearTab === 'tent' ? g.category === 'tent' : gearTab === 'tarp' ? g.category === 'tarp' : g.category !== 'tent' && g.category !== 'tarp'
-  );
+  const allGear = [...customGear, ...GEAR_PRESETS];
+  const isGearSearch = gearQuery.trim().length > 0;
+  const tabGear = allGear.filter((g) => tabOf(g.category) === gearTab);
+  const gearGroups = [...new Set(tabGear.map((g) => g.group).filter((x): x is string => !!x))];
+  const gearList = isGearSearch
+    ? allGear.filter((g) => gearMatches(g, gearQuery))
+    : tabGear.filter((g) => gearGroup === '전체' || g.group === gearGroup);
 
   const renderVerdict = (compact: boolean) => {
     const s = LEVEL_STYLE[analysis.level];
@@ -683,47 +721,106 @@ export default function App() {
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
               <Tent className="w-6 h-6 text-emerald-600" /> 장비 꺼내기
             </h2>
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                ['tent', '⛺ 텐트'],
-                ['tarp', '⛱️ 타프'],
-                ['etc', '🚙 기타'],
-              ] as [GearTab, string][]).map(([id, label]) => (
+            <div className="relative">
+              <Search className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                value={gearQuery}
+                onChange={(e) => setGearQuery(e.target.value)}
+                placeholder="장비 검색 (예: 돔, 터널, 화로, 의자)"
+                aria-label="장비 검색"
+                className="w-full h-12 rounded-xl border-2 border-slate-300 pl-10 pr-11 text-base focus:border-emerald-500 focus:outline-none"
+              />
+              {gearQuery && (
                 <button
-                  key={id}
-                  onClick={() => setGearTab(id)}
-                  className={`h-12 rounded-xl border-2 text-base font-bold ${
-                    gearTab === id ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-slate-300 text-slate-700'
-                  }`}
+                  onClick={() => setGearQuery('')}
+                  aria-label="검색어 지우기"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg text-slate-500 hover:bg-slate-100 text-xl leading-none"
                 >
-                  {label}
+                  ×
                 </button>
-              ))}
+              )}
             </div>
-            <div className="space-y-2">
+
+            {!isGearSearch && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {(Object.keys(GEAR_TAB_LABEL) as GearTab[]).map((id) => (
+                    <button
+                      key={id}
+                      onClick={() => {
+                        setGearTab(id);
+                        setGearGroup('전체');
+                      }}
+                      className={`h-12 rounded-xl border-2 text-base font-bold ${
+                        gearTab === id ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      {GEAR_TAB_LABEL[id]}
+                    </button>
+                  ))}
+                </div>
+                {gearGroups.length > 1 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {['전체', ...gearGroups].map((gr) => (
+                      <button
+                        key={gr}
+                        onClick={() => setGearGroup(gr)}
+                        className={`h-10 px-3.5 rounded-full border-2 text-sm font-bold ${
+                          gearGroup === gr ? 'bg-sky-600 border-sky-600 text-white' : 'bg-white border-slate-300 text-slate-700'
+                        }`}
+                      >
+                        {gr}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            <p className="text-sm text-slate-500">
+              {isGearSearch ? `"${gearQuery.trim()}" 검색 결과 ${gearList.length}개` : `${gearList.length}개`} · 눌러서 추가 · 크기는 대략적인 값이에요
+            </p>
+
+            <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1 scrollbar-thin">
+              {gearList.length === 0 && (
+                <p className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-base text-slate-600">
+                  찾는 장비가 없어요. 다른 말로 검색하시거나, 아래 <strong>"크기 직접 넣기"</strong>로 내 텐트를 만들어 보세요.
+                </p>
+              )}
               {gearList.map((g) => (
-                <button
-                  key={g.id}
-                  onClick={() => addGear(g)}
-                  className="w-full flex items-center gap-3 rounded-xl border-2 border-slate-200 hover:border-emerald-400 bg-white px-3 py-3 text-left"
-                >
-                  <span className="text-3xl">{gearEmoji(g)}</span>
-                  <span className="flex-1">
-                    <span className="block text-base font-bold text-slate-900">{g.name}</span>
-                    <span className="block text-sm text-slate-500">
-                      {g.widthM}m × {g.lengthM}m
+                <div key={g.id} className="flex items-stretch gap-1.5">
+                  <button
+                    onClick={() => addGear(g)}
+                    className="flex-1 flex items-center gap-3 rounded-xl border-2 border-slate-200 hover:border-emerald-400 bg-white px-3 py-3 text-left"
+                  >
+                    <span className="text-3xl">{gearEmoji(g)}</span>
+                    <span className="flex-1">
+                      <span className="block text-base font-bold text-slate-900">{g.name}</span>
+                      <span className="block text-sm text-slate-500">
+                        {g.widthM}m × {g.lengthM}m{isGearSearch ? ` · ${GEAR_TAB_LABEL[tabOf(g.category)]}` : ''}
+                      </span>
                     </span>
-                  </span>
-                  <span className="flex items-center gap-1 text-emerald-700 font-bold text-base">
-                    <Plus className="w-5 h-5" /> 추가
-                  </span>
-                </button>
+                    <span className="w-10 h-10 shrink-0 rounded-full bg-emerald-600 text-white flex items-center justify-center" aria-label="추가">
+                      <Plus className="w-6 h-6" strokeWidth={3} />
+                    </span>
+                  </button>
+                  {g.id.startsWith('custom-') && (
+                    <button
+                      onClick={() => removeCustomGear(g.id)}
+                      aria-label={`${g.name} 저장 목록에서 지우기`}
+                      title="저장 목록에서 지우기"
+                      className="w-12 rounded-xl border-2 border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
 
-            {gearTab === 'tent' && (
+            {(gearTab === 'tent' || isGearSearch) && (
               <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <summary className="cursor-pointer text-base font-bold text-slate-800">내 텐트가 없나요? 크기를 직접 넣기</summary>
+                <summary className="cursor-pointer text-base font-bold text-slate-800">내 텐트 크기 직접 넣기 (저장돼요)</summary>
                 <form onSubmit={addCustomTent} className="mt-3 space-y-2">
                   <input
                     value={customName}
