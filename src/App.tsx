@@ -625,13 +625,15 @@ export default function App() {
   const renderStep3 = () => (
     <div className="space-y-4">
       <Hint>
-        <strong>① 오른쪽 아래 목록에서 장비를 눌러 추가</strong>하고, <strong>② 장비를 꾹 눌러 끌거나 방향 버튼</strong>으로 옮겨 보세요. 위험한 곳은 아래 빨간 글씨로 알려드려요.
+        <strong>① 오른쪽 아래 목록에서 장비를 눌러 추가</strong>하고, <strong>② 장비를 꾹 눌러 끌거나 방향 버튼</strong>으로 옮겨 보세요. 목록에 없는 장비는 <strong>바로 아래 보라색 "AI로 장비 규격 찾기"</strong>에 이름을 쓰면 크기를 찾아 드려요. 위험한 곳은 아래 빨간 글씨로 알려드려요.
       </Hint>
 
       <div className="flex flex-wrap gap-2 text-base font-semibold">
         <span className="rounded-full bg-sky-100 text-sky-900 px-3.5 py-1.5">💨 {windFromLabel(windDirDeg)} · {windGustMs}m/s</span>
         {day && <span className="rounded-full bg-slate-100 text-slate-800 px-3.5 py-1.5">{weatherCodeInfo(day.code).emoji} {dateLabel}</span>}
       </div>
+
+      <GearLookup onSave={saveCustomGear} onManual={openManualEntry} />
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
         <div className="xl:col-span-8 space-y-3">
@@ -753,8 +755,6 @@ export default function App() {
               )}
             </div>
 
-            {gearQuery.trim().length >= 2 && <GearLookup query={gearQuery} onSave={saveCustomGear} onManual={openManualEntry} />}
-
             {!isGearSearch && (
               <>
                 <div className="grid grid-cols-2 gap-2">
@@ -798,8 +798,7 @@ export default function App() {
             <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1 scrollbar-thin">
               {gearList.length === 0 && (
                 <p className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-base text-slate-600">
-                  목록에는 없어요. {gearQuery.trim().length >= 2 ? <>위의 <strong>"인터넷에서 규격 찾기"</strong>를 누르거나, </> : '다른 말로 검색하시거나, '}
-                  아래 <strong>"크기 직접 넣기"</strong>로 내 텐트를 만들어 보세요.
+                  목록에는 없어요. 다른 말로 검색하시거나, 화면 위쪽 보라색 <strong>"AI로 장비 규격 찾기"</strong>에 이름을 넣어 보세요. 아래 <strong>"크기 직접 넣기"</strong>로 직접 만들 수도 있어요.
                 </p>
               )}
               {gearList.map((g) => (
