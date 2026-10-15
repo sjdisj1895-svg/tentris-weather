@@ -191,6 +191,21 @@ async function askModel(system: string, user: string, env: LookupEnv): Promise<{
   }
 }
 
+/**
+ * askModel + 출처 수집. 웹 검색 결과(출처 링크)가 하나도 안 붙어 오는 경우가 가끔 있어서
+ * 그때는 한 번만 다시 물어봅니다.
+ */
+async function askWithSources(system: string, user: string, env: LookupEnv): Promise<{ message: any; model: string; sources: SourceLink[] }> {
+  let r = await askModel(system, user, env);
+  let sources = collectSources(r.message);
+  if (sources.length === 0) {
+    console.log('[ai-lookup] no sources, retrying once');
+    r = await askModel(system, user, env);
+    sources = collectSources(r.message);
+  }
+  return { ...r, sources };
+}
+
 // ================= ① 장비 규격 =================
 const GEAR_PROMPT = `You look up camping gear specifications for a Korean camping-site layout app. Use web search to find the product the user names.
 
@@ -224,9 +239,8 @@ function gearNotFound(query: string, notes: string, sources: SourceLink[]): Gear
 }
 
 export async function lookupGear(query: string, env: LookupEnv): Promise<GearLookupResult> {
-  const { message, model } = await askModel(GEAR_PROMPT, `Find the installed size of this camping gear: "${query}"`, env);
+  const { message, model, sources } = await askWithSources(GEAR_PROMPT, `Find the installed size of this camping gear: "${query}"`, env);
   const content: string = typeof message?.content === 'string' ? message.content : '';
-  const sources = collectSources(message);
   console.log('[ai-lookup] gear served by', model, '| sources', sources.length);
 
   const parsed = extractJson(content);
@@ -297,7 +311,7 @@ function distanceKm(aLat: number, aLon: number, bLat: number, bLon: number): num
 const NOMINATIM_UA = 'tentris-weather/1.0 (+https://github.com/sjdisj1895-svg/tentris-weather)';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function nominatim(q: string): Promise<{ lat: number; lon: number; label: string } | null> {
+async function nominatim(q: string): Promise<{ lat: number; lon: number; label: string; rank: number } | null> {
   const params = new URLSearchParams({ q, format: 'jsonv2', countrycodes: 'kr', limit: '1', 'accept-language': 'ko' });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEOCODE_TIMEOUT_MS);
@@ -312,13 +326,15 @@ async function nominatim(q: string): Promise<{ lat: number; lon: number; label: 
     const lat = Number(r?.lat);
     const lon = Number(r?.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !inKorea(lat, lon)) return null;
-    return { lat, lon, label: typeof r?.display_name === 'string' ? r.display_name : '' };
+    return { lat, lon, label: typeof r?.display_name === 'string' ? r.display_name : '', rank: Number(r?.place_rank) || 0 };
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
 }
+
+const ADDRESS_MIN_RANK = 26;
 
 interface MapRef {
   lat: number;
@@ -337,7 +353,10 @@ async function findMapRef(address: string, sido: string, sigungu: string): Promi
 
   if (address) {
     const hit = await nominatim(address);
-    if (hit && (!areaKey || hit.label.includes(areaKey))) return { lat: hit.lat, lon: hit.lon, level: 'address' };
+    if (hit && (!areaKey || hit.label.includes(areaKey))) {
+      // place_rank 26 이상(도로·건물)일 때만 "주소 수준"으로 인정합니다. 마을(19)·시군(12~16)은 지역 수준입니다.
+      return { lat: hit.lat, lon: hit.lon, level: hit.rank >= ADDRESS_MIN_RANK ? 'address' : 'area' };
+    }
     await sleep(1100);
   }
   const areaQuery = `${sido} ${sigungu}`.trim();
@@ -366,9 +385,8 @@ const ADDRESS_TOLERANCE_KM = 15;
 const AREA_TOLERANCE_KM = 50;
 
 export async function lookupPlace(query: string, env: LookupEnv): Promise<PlaceLookupResult> {
-  const { message, model } = await askModel(PLACE_PROMPT, `Find this camping place in South Korea: "${query}"`, env);
+  const { message, model, sources } = await askWithSources(PLACE_PROMPT, `Find this camping place in South Korea: "${query}"`, env);
   const content: string = typeof message?.content === 'string' ? message.content : '';
-  const sources = collectSources(message);
   console.log('[ai-lookup] place served by', model, '| sources', sources.length);
 
   const parsed = extractJson(content);
@@ -382,11 +400,6 @@ export async function lookupPlace(query: string, env: LookupEnv): Promise<PlaceL
   if (parsed.found !== true) {
     return { ...placeNotFound(query, notes || '캠핑장을 찾지 못했어요. 이름을 더 자세히 쓰거나 동네 이름으로 찾아 보세요.', sources), name };
   }
-  // 출처가 없으면 사람이 확인할 방법이 없으므로 쓰지 않습니다.
-  if (sources.length === 0) {
-    return { ...placeNotFound(query, '위치는 나왔지만 출처를 확인할 수 없어서 쓰지 않았어요. 동네 이름으로 찾아 보세요.', sources), name };
-  }
-
   const aiLat = toNumber(parsed.lat);
   const aiLon = toNumber(parsed.lon);
   const aiCoordsOk = aiLat !== null && aiLon !== null && inKorea(aiLat, aiLon);
@@ -423,6 +436,16 @@ export async function lookupPlace(query: string, env: LookupEnv): Promise<PlaceL
     basis = ref.level;
   } else {
     return { ...placeNotFound(query, '정확한 위치를 확인하지 못했어요. 동네 이름으로 찾아 보세요.', sources), name, address };
+  }
+
+  // 웹 출처 링크가 없으면 AI 말만 남으므로, 지도 자료로 주소(또는 AI 좌표)가 실제로 확인된 경우에만 인정합니다.
+  // (지어낸 캠핑장은 주소가 지도에 나오지 않으므로 여기서 걸러집니다.)
+  if (sources.length === 0) {
+    // 지도에서 도로·건물 수준 주소로 확인된 경우만 인정합니다. (시·군 수준 확인만으로는 지어낸 이름을 못 걸러냅니다.)
+    if (ref?.level !== 'address') {
+      return { ...placeNotFound(query, '위치는 나왔지만 출처 링크도 없고 지도로도 확인되지 않아서 쓰지 않았어요. 시·군 이름을 함께 써서 다시 찾아 보세요.', sources), name, address };
+    }
+    extraNote = [extraNote, '출처 링크는 받지 못했지만 주소는 지도 자료에서 확인됐어요. 아래 검색 링크로 한 번 더 확인해 보세요.'].filter(Boolean).join(' ');
   }
 
   return {

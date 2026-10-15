@@ -24,7 +24,7 @@ type Status = 'idle' | 'loading' | 'done' | 'error';
 const BASIS_INFO: Record<PlaceLookupResult['basis'], { text: string; cls: string }> = {
   verified: { text: '찾은 위치를 지도 자료와 맞춰 보았어요', cls: 'bg-emerald-100 text-emerald-900' },
   address: { text: '주소로 찾은 위치예요 (몇백 m쯤 다를 수 있어요)', cls: 'bg-emerald-100 text-emerald-900' },
-  area: { text: '시·군 중심 위치예요. 날씨는 비슷하지만 산·바다 가까운 곳은 조금 다를 수 있어요', cls: 'bg-amber-100 text-amber-900' },
+  area: { text: '동네·시군 중심 위치예요. 날씨는 비슷하지만 산·바다 가까운 곳은 조금 다를 수 있어요', cls: 'bg-amber-100 text-amber-900' },
   unchecked: { text: '다른 자료로 확인하지 못했어요. 지도 링크로 꼭 확인하세요', cls: 'bg-amber-100 text-amber-900' },
 };
 
@@ -159,6 +159,14 @@ export default function PlaceLookup({ query, onPick, autoRun = 0 }: Props) {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <a href={mapUrl} target="_blank" rel="noopener noreferrer" className="text-base font-semibold text-sky-700 underline underline-offset-2 inline-flex items-center gap-1">
             <MapPin className="w-4 h-4" /> 지도에서 위치 확인
+          </a>
+          <a
+            href={`https://www.google.com/search?q=${encodeURIComponent(`${r.name} ${r.address}`.trim())}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-base font-semibold text-sky-700 underline underline-offset-2 inline-flex items-center gap-1"
+          >
+            <ExternalLink className="w-4 h-4" /> 구글로 검색해서 확인
           </a>
         </div>
         {sourceList(r)}
