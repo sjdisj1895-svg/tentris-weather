@@ -173,6 +173,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Place[] | null>(null);
   const [customPlaces, setCustomPlaces] = useState<PickedPlace[]>(loadCustomPlaces);
+  const [aiTrigger, setAiTrigger] = useState(0);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [weatherStatus, setWeatherStatus] = useState<WeatherStatus>('idle');
@@ -269,7 +270,10 @@ export default function App() {
     }
     setSearching(true);
     try {
-      setSearchResults(await searchPlaces(query));
+      const results = await searchPlaces(query);
+      setSearchResults(results);
+      // 목록과 동네 검색에 없으면 캠핑장 이름일 가능성이 커서 AI 검색을 자동으로 이어서 합니다.
+      if (results.length === 0 && !CAMPGROUNDS.some((c) => c.name.includes(query.trim()))) setAiTrigger((t) => t + 1);
     } catch (err) {
       console.error(err);
       setSearchError('검색하지 못했어요. 인터넷 연결을 확인해 주세요.');
@@ -441,7 +445,7 @@ export default function App() {
         </div>
         {searchError && <p className="text-base font-semibold text-rose-600">{searchError}</p>}
 
-        <PlaceLookup query={query} onPick={pickAiPlace} />
+        <PlaceLookup query={query} onPick={pickAiPlace} autoRun={aiTrigger} />
 
         {(localMatches.length > 0 || (searchResults && searchResults.length > 0)) && (
           <div className="space-y-2 pt-1">
@@ -466,7 +470,7 @@ export default function App() {
           </div>
         )}
         {searchResults && searchResults.length === 0 && localMatches.length === 0 && (
-          <p className="text-base text-slate-600">검색 결과가 없어요. 더 큰 지명(예: 시·군 이름)으로 다시 찾아 보세요.</p>
+          <p className="text-base text-slate-600">동네·목록에는 없어서, 아래에서 <strong>AI가 인터넷으로 캠핑장을 찾고 있어요.</strong></p>
         )}
       </form>
 

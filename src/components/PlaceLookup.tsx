@@ -15,6 +15,8 @@ interface Props {
   /** 위쪽 검색 입력칸의 글자를 그대로 씁니다. */
   query: string;
   onPick: (place: PickedPlace) => void;
+  /** 값이 바뀔 때마다 검색을 자동으로 실행합니다. (일반 검색에 결과가 없을 때 이어서 AI가 찾게 함) */
+  autoRun?: number;
 }
 
 type Status = 'idle' | 'loading' | 'done' | 'error';
@@ -26,7 +28,7 @@ const BASIS_INFO: Record<PlaceLookupResult['basis'], { text: string; cls: string
   unchecked: { text: '다른 자료로 확인하지 못했어요. 지도 링크로 꼭 확인하세요', cls: 'bg-amber-100 text-amber-900' },
 };
 
-export default function PlaceLookup({ query, onPick }: Props) {
+export default function PlaceLookup({ query, onPick, autoRun = 0 }: Props) {
   const [status, setStatus] = useState<Status>('idle');
   const [result, setResult] = useState<PlaceLookupResult | null>(null);
   const [error, setError] = useState('');
@@ -57,6 +59,12 @@ export default function PlaceLookup({ query, onPick }: Props) {
       setStatus('error');
     }
   };
+
+  useEffect(() => {
+    if (autoRun > 0) run();
+    // run은 매 렌더마다 새로 만들어지므로 autoRun이 바뀔 때만 실행합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun]);
 
   const sourceList = (r: PlaceLookupResult) =>
     r.sources.length > 0 && (
