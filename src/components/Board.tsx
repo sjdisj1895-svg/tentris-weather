@@ -96,7 +96,7 @@ export default function Board(props: BoardProps) {
         onPointerLeave={stopDrag}
         onClick={() => setSelectedUid(null)}
         style={{ width: boardW, height: boardH }}
-        className="canvas-ground relative rounded-xl border border-slate-300 shadow-inner select-none touch-none overflow-hidden"
+        className="canvas-ground relative rounded-xl border border-slate-300 shadow-inner select-none touch-pan-y overflow-hidden"
       >
         {/* 바람 줄기 */}
         <div
@@ -208,7 +208,7 @@ export default function Board(props: BoardProps) {
                 height: lengthPx,
                 transform: `rotate(${item.rotation}deg)`,
               }}
-              className={`absolute z-20 cursor-grab active:cursor-grabbing rounded-md ${
+              className={`absolute z-20 cursor-grab active:cursor-grabbing touch-none rounded-md ${
                 selected ? 'ring-4 ring-sky-500 ring-offset-2 ring-offset-white/40' : ''
               }`}
             >

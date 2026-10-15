@@ -140,12 +140,12 @@ function SizeStepper(props: { label: string; value: number; onChange: (v: number
 function IndexCard(props: { icon: React.ReactNode; title: string; level: Level; value: string; sub: string }) {
   const s = LEVEL_STYLE[props.level];
   return (
-    <div className={`rounded-2xl border-2 p-4 ${s.box}`}>
+    <div className={`rounded-2xl border-2 p-3 sm:p-4 ${s.box}`}>
       <div className={`flex items-center gap-2 text-base font-bold ${s.text}`}>
         {props.icon}
         {props.title}
       </div>
-      <p className={`mt-1 text-xl font-extrabold ${s.text}`}>{props.value}</p>
+      <p className={`mt-1 text-lg sm:text-xl font-extrabold leading-snug ${s.text}`}>{props.value}</p>
       <p className="text-base text-slate-600 mt-0.5">{props.sub}</p>
     </div>
   );
@@ -496,7 +496,7 @@ export default function App() {
             </div>
           )}
           {weatherStatus === 'ok' && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 sm:gap-2">
               {days.map((d, i) => {
                 const w = weatherCodeInfo(d.code);
                 const active = i === dayIdx;
@@ -504,7 +504,7 @@ export default function App() {
                   <button
                     key={d.date}
                     onClick={() => pickDay(i)}
-                    className={`rounded-xl border-2 p-2.5 text-center ${
+                    className={`rounded-xl border-2 p-1.5 sm:p-2.5 text-center ${
                       active ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200' : 'border-slate-200 bg-white hover:border-emerald-300'
                     }`}
                   >
@@ -515,8 +515,8 @@ export default function App() {
                     <div className="text-base font-bold text-slate-900">
                       <span className="text-sky-700">{d.tMinC}°</span> / <span className="text-rose-600">{d.tMaxC}°</span>
                     </div>
-                    <div className="text-sm text-slate-600">☔ {d.rainProbPct}%</div>
-                    <div className="text-sm text-slate-600">💨 {d.gustMs}m/s</div>
+                    <div className="text-[13px] sm:text-sm text-slate-600 whitespace-nowrap">☔ {d.rainProbPct}%</div>
+                    <div className="text-[13px] sm:text-sm text-slate-600 whitespace-nowrap">💨 {d.gustMs}m/s</div>
                   </button>
                 );
               })}
@@ -625,7 +625,12 @@ export default function App() {
   const renderStep3 = () => (
     <div className="space-y-4">
       <Hint>
-        <strong>① 오른쪽 아래 목록에서 장비를 눌러 추가</strong>하고, <strong>② 장비를 꾹 눌러 끌거나 방향 버튼</strong>으로 옮겨 보세요. 목록에 없는 장비는 <strong>바로 아래 보라색 "AI로 장비 규격 찾기"</strong>에 이름을 쓰면 크기를 찾아 드려요. 위험한 곳은 아래 빨간 글씨로 알려드려요.
+        <span className="sm:hidden">
+          장비 목록에서 <strong>눌러 추가</strong>하고, <strong>끌거나 방향 버튼</strong>으로 옮겨 보세요. 없는 장비는 <strong>아래 보라색 칸</strong>에서 AI로 찾을 수 있어요.
+        </span>
+        <span className="hidden sm:inline">
+          <strong>① 오른쪽 아래 목록에서 장비를 눌러 추가</strong>하고, <strong>② 장비를 꾹 눌러 끌거나 방향 버튼</strong>으로 옮겨 보세요. 목록에 없는 장비는 <strong>바로 아래 보라색 "AI로 장비 규격 찾기"</strong>에 이름을 쓰면 크기를 찾아 드려요. 위험한 곳은 아래 빨간 글씨로 알려드려요.
+        </span>
       </Hint>
 
       <div className="flex flex-wrap gap-2 text-base font-semibold">
@@ -892,12 +897,12 @@ export default function App() {
         <p className="text-lg font-bold text-slate-800">
           📍 {placeLabel} {dateLabel && <span className="text-slate-500 font-semibold">· {dateLabel}</span>}
         </p>
-        <div className="flex gap-2 no-print">
-          <button onClick={copySummary} className="h-12 px-4 rounded-xl bg-yellow-300 hover:bg-yellow-200 text-slate-900 text-base font-bold flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row gap-2 no-print w-full sm:w-auto">
+          <button onClick={copySummary} className="h-12 px-4 rounded-xl bg-yellow-300 hover:bg-yellow-200 text-slate-900 text-base font-bold flex items-center justify-center gap-2">
             {copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
             {copied ? '복사했어요! 카톡에 붙여넣기' : '카톡으로 보내기용 복사'}
           </button>
-          <button onClick={() => window.print()} className="h-12 px-4 rounded-xl bg-white border-2 border-slate-300 hover:bg-slate-50 text-base font-bold flex items-center gap-2">
+          <button onClick={() => window.print()} className="h-12 px-4 rounded-xl bg-white border-2 border-slate-300 hover:bg-slate-50 text-base font-bold flex items-center justify-center gap-2">
             <Printer className="w-5 h-5" /> 인쇄
           </button>
         </div>
@@ -905,7 +910,7 @@ export default function App() {
 
       {renderVerdict(false)}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-2.5 sm:gap-3">
         <IndexCard icon={<Wind className="w-5 h-5" />} title="바람" level={analysis.windLevel} value={windText} sub={`순간 ${windGustMs}m/s · ${windFromLabel(windDirDeg)}`} />
         <IndexCard icon={<CloudRain className="w-5 h-5" />} title="비" level={analysis.rainLevel} value={rainText} sub={`올 확률 ${rainProbPct}% · 예상 ${rainMm}mm`} />
         <IndexCard icon={<Thermometer className="w-5 h-5" />} title="새벽 기온" level={analysis.coldLevel} value={`${minTempC}℃ · ${coldText}`} sub={`해발 ${elevationM}m 지점 예보`} />
@@ -1016,15 +1021,20 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="no-print border-b border-slate-200 bg-white/90 backdrop-blur sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-sky-500 flex items-center justify-center text-white shadow">
-            <Tent className="w-7 h-7" />
+        <div className="max-w-6xl mx-auto px-4 py-2 sm:py-3 flex items-center gap-3">
+          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-sky-500 flex items-center justify-center text-white shadow shrink-0">
+            <Tent className="w-6 h-6 sm:w-7 sm:h-7" />
           </div>
-          <div className="flex-1">
-            <h1 className="text-xl font-extrabold text-slate-900 leading-tight">
-              텐트리스 웨더 <span className="brand-gradient">Tentris Weather</span>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 leading-tight truncate">
+              텐트리스 웨더 <span className="brand-gradient hidden sm:inline">Tentris Weather</span>
             </h1>
-            <p className="text-base text-slate-600 leading-tight">캠핑 자리 배치와 날씨를 한눈에 확인해요</p>
+            <p className="hidden sm:block text-base text-slate-600 leading-tight">캠핑 자리 배치와 날씨를 한눈에 확인해요</p>
+            {place && weatherStatus === 'ok' && day && (
+              <p className="sm:hidden text-sm font-semibold text-slate-600 leading-tight truncate">
+                📍 {place.name} · {weatherCodeInfo(day.code).emoji} {day.dayLabel}
+              </p>
+            )}
           </div>
           {place && weatherStatus === 'ok' && day && (
             <div className="hidden sm:block text-right text-base font-semibold text-slate-700">
@@ -1035,7 +1045,7 @@ export default function App() {
           )}
         </div>
 
-        <nav className="max-w-5xl mx-auto px-4 pb-3 grid grid-cols-4 gap-2" aria-label="진행 단계">
+        <nav className="max-w-6xl mx-auto px-4 pb-2 sm:pb-3 flex gap-2" aria-label="진행 단계">
           {STEPS.map((s) => {
             const active = s.n === step;
             const done = s.n < step;
@@ -1044,7 +1054,10 @@ export default function App() {
                 key={s.n}
                 onClick={() => setStep(s.n)}
                 aria-current={active ? 'step' : undefined}
-                className={`h-14 rounded-xl border-2 flex items-center justify-center gap-2 text-base font-bold px-1 ${
+                aria-label={`${s.n}단계 ${s.label}`}
+                className={`h-12 sm:h-14 rounded-xl border-2 flex items-center justify-center gap-2 text-base font-bold px-1 ${
+                  active ? 'flex-[3] sm:flex-1' : 'flex-none w-14 sm:w-auto sm:flex-1'
+                } ${
                   active
                     ? 'bg-emerald-600 border-emerald-600 text-white shadow'
                     : done
@@ -1055,15 +1068,15 @@ export default function App() {
                 <span className={`w-7 h-7 rounded-full flex items-center justify-center text-sm shrink-0 ${active ? 'bg-white text-emerald-700' : done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'}`}>
                   {done ? <Check className="w-4 h-4" strokeWidth={3} /> : s.n}
                 </span>
-                <span className="leading-tight">{s.label}</span>
+                <span className={`leading-tight whitespace-nowrap ${active ? '' : 'hidden sm:inline'}`}>{s.label}</span>
               </button>
             );
           })}
         </nav>
       </header>
 
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 pt-5 pb-32">
-        <h2 className="text-2xl font-extrabold text-slate-900 mb-4">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 pt-4 sm:pt-5 pb-32">
+        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 mb-3 sm:mb-4">
           {step}단계. {step === 1 ? '어디로, 언제 가세요?' : step === 2 ? '자리(사이트) 크기를 알려 주세요' : step === 3 ? '장비를 자리에 놓아 보세요' : '결과와 준비물을 확인하세요'}
         </h2>
         {step === 1 && renderStep1()}
@@ -1072,19 +1085,20 @@ export default function App() {
         {step === 4 && renderStep4()}
       </main>
 
-      <footer className="no-print fixed bottom-0 inset-x-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      <footer className="no-print fixed bottom-0 inset-x-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+        <div className="max-w-6xl mx-auto px-4 py-2.5 sm:py-3 flex items-center gap-2 sm:gap-3">
           <button
             onClick={() => setStep((s) => (Math.max(1, s - 1) as Step))}
             disabled={step === 1}
-            className="h-14 px-5 rounded-xl border-2 border-slate-300 bg-white text-lg font-bold text-slate-700 flex items-center gap-1 disabled:opacity-30"
+            className="h-12 sm:h-14 px-3 sm:px-5 rounded-xl border-2 border-slate-300 bg-white text-lg font-bold text-slate-700 flex items-center gap-0.5 whitespace-nowrap shrink-0 disabled:opacity-30"
           >
             <ChevronLeft className="w-6 h-6" /> 이전
           </button>
-          <div className="flex-1 text-center">
+          <div className="flex-1 min-w-0 text-center">
             {step === 1 && !place && (
-              <button onClick={() => setStep(2)} className="text-base font-semibold text-slate-500 underline underline-offset-4">
-                날씨 없이 배치만 해볼게요
+              <button onClick={() => setStep(2)} className="text-sm sm:text-base font-semibold text-slate-500 underline underline-offset-4 leading-snug">
+                <span className="sm:hidden">날씨 없이 해볼게요</span>
+                <span className="hidden sm:inline">날씨 없이 배치만 해볼게요</span>
               </button>
             )}
           </div>
@@ -1092,12 +1106,13 @@ export default function App() {
             <button
               onClick={() => setStep((s) => (Math.min(4, s + 1) as Step))}
               disabled={!canNext}
-              className="h-14 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-extrabold flex items-center gap-1 shadow disabled:opacity-40"
+              aria-label={`다음: ${nextLabel}`}
+              className="h-12 sm:h-14 px-4 sm:px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-extrabold flex items-center gap-1 whitespace-nowrap shrink-0 shadow disabled:opacity-40"
             >
-              다음: {nextLabel} <ChevronRight className="w-6 h-6" />
+              다음<span className="hidden sm:inline">: {nextLabel}</span> <ChevronRight className="w-6 h-6" />
             </button>
           ) : (
-            <button onClick={() => setStep(1)} className="h-14 px-6 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-lg font-extrabold">
+            <button onClick={() => setStep(1)} className="h-12 sm:h-14 px-4 sm:px-6 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-lg font-extrabold whitespace-nowrap shrink-0">
               처음부터 다시
             </button>
           )}
