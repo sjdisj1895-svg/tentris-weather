@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import Board from './components/Board';
 import GearLookup from './components/GearLookup';
+import PlaceLookup, { PickedPlace } from './components/PlaceLookup';
 import { analyze, BOARD_PADDING_M, Level, SurfaceType } from './analysis';
 import { CAMPGROUNDS, PLACE_TYPE_INFO, REGION_GROUPS, RegionGroup } from './campgrounds';
 import { GEAR_PRESETS, GEAR_TAB_LABEL, GearPreset, GearTab, gearEmoji, gearMatches, PlacedItem, tabOf } from './presets';
@@ -44,6 +45,18 @@ const CUSTOM_GEAR_KEY = 'tentris-custom-gear';
 const loadCustomGear = (): GearPreset[] => {
   try {
     const raw = localStorage.getItem(CUSTOM_GEAR_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const CUSTOM_PLACE_KEY = 'tentris-custom-places';
+
+const loadCustomPlaces = (): PickedPlace[] => {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PLACE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -159,6 +172,7 @@ export default function App() {
   const [region, setRegion] = useState<RegionGroup | '전체'>('전체');
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Place[] | null>(null);
+  const [customPlaces, setCustomPlaces] = useState<PickedPlace[]>(loadCustomPlaces);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [weatherStatus, setWeatherStatus] = useState<WeatherStatus>('idle');
@@ -228,6 +242,22 @@ export default function App() {
   const pickDay = (i: number) => {
     setDayIdx(i);
     applyDay(days[i]);
+  };
+
+  const persistPlaces = (next: PickedPlace[]) => {
+    setCustomPlaces(next);
+    try {
+      localStorage.setItem(CUSTOM_PLACE_KEY, JSON.stringify(next));
+    } catch {
+      /* 저장 공간이 막혀 있어도 이번 화면에서는 쓸 수 있어요 */
+    }
+  };
+
+  // AI로 찾은 캠핑장을 "내가 찾은 캠핑장"에 저장(같은 이름·위치는 한 번만)하고 날씨를 불러옵니다.
+  const pickAiPlace = (p: PickedPlace) => {
+    const rest = customPlaces.filter((c) => !(c.name === p.name && Math.abs(c.lat - p.lat) < 0.001 && Math.abs(c.lon - p.lon) < 0.001));
+    persistPlaces([p, ...rest].slice(0, 20));
+    loadPlace({ name: p.name, region: p.region, lat: p.lat, lon: p.lon });
   };
 
   const runSearch = async (e: React.FormEvent) => {
@@ -384,7 +414,7 @@ export default function App() {
   const renderStep1 = () => (
     <div className="space-y-5">
       <Hint>
-        가시려는 곳을 <strong>목록에서 누르거나</strong>, 동네·캠핑장 이름을 <strong>검색</strong>해 주세요. 장소를 고르면 날씨가 자동으로 나와요.
+        가시려는 곳을 <strong>목록에서 누르거나</strong>, 동네·캠핑장 이름을 <strong>검색</strong>해 주세요. 목록에 없는 캠핑장은 이름을 쓰고 <strong>보라색 "AI로 캠핑장 찾기"</strong>를 누르면 위치를 찾아 드려요. 장소를 고르면 날씨가 자동으로 나와요.
       </Hint>
 
       <form onSubmit={runSearch} className="card rounded-2xl p-4 space-y-3 no-print">
@@ -399,7 +429,7 @@ export default function App() {
               setQuery(e.target.value);
               setSearchResults(null);
             }}
-            placeholder="예: 가평, 태안, 협재"
+            placeholder="예: 가평, 태안, 가평 자라섬 캠핑장"
             className="flex-1 h-14 rounded-xl border-2 border-slate-300 px-4 text-lg focus:border-emerald-500 focus:outline-none"
           />
           <button type="submit" disabled={searching} className="h-14 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-bold disabled:opacity-60">
@@ -410,6 +440,8 @@ export default function App() {
           </button>
         </div>
         {searchError && <p className="text-base font-semibold text-rose-600">{searchError}</p>}
+
+        <PlaceLookup query={query} onPick={pickAiPlace} />
 
         {(localMatches.length > 0 || (searchResults && searchResults.length > 0)) && (
           <div className="space-y-2 pt-1">
@@ -442,6 +474,37 @@ export default function App() {
         <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
           <MapPin className="w-6 h-6 text-emerald-600" /> 지역에서 고르기
         </h2>
+        {customPlaces.length > 0 && (
+          <div className="rounded-xl bg-violet-50 border-2 border-violet-200 p-3 space-y-2">
+            <p className="text-base font-bold text-violet-900">⭐ 내가 찾은 캠핑장 <span className="text-sm font-normal text-violet-700">(이 기기에 저장돼요)</span></p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {customPlaces.map((c) => {
+                const active = place?.name === c.name;
+                return (
+                  <div key={`${c.name}-${c.lat}-${c.lon}`} className="flex items-stretch gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => loadPlace({ name: c.name, region: c.region, lat: c.lat, lon: c.lon })}
+                      className={`flex-1 min-w-0 text-left rounded-xl border-2 px-3 py-2.5 ${active ? 'border-violet-500 bg-white' : 'border-violet-200 bg-white hover:border-violet-400'}`}
+                    >
+                      <span className="block text-base font-bold text-slate-900 truncate">{PLACE_TYPE_INFO[c.kind]?.emoji ?? '📍'} {c.name}</span>
+                      <span className="block text-sm text-slate-500 truncate">{c.region}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => persistPlaces(customPlaces.filter((x) => x !== c))}
+                      aria-label={`${c.name} 저장 목록에서 지우기`}
+                      title="저장 목록에서 지우기"
+                      className="w-11 rounded-xl border-2 border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
           {(['전체', ...REGION_GROUPS] as (RegionGroup | '전체')[]).map((r) => (
             <button
