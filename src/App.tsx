@@ -31,6 +31,7 @@ import {
   Zap,
 } from 'lucide-react';
 import Board from './components/Board';
+import GearLookup from './components/GearLookup';
 import { analyze, BOARD_PADDING_M, Level, SurfaceType } from './analysis';
 import { CAMPGROUNDS, PLACE_TYPE_INFO, REGION_GROUPS, RegionGroup } from './campgrounds';
 import { GEAR_PRESETS, GEAR_TAB_LABEL, GearPreset, GearTab, gearEmoji, gearMatches, PlacedItem, tabOf } from './presets';
@@ -187,6 +188,7 @@ export default function App() {
   const [gearGroup, setGearGroup] = useState('전체');
   const [gearQuery, setGearQuery] = useState('');
   const [customGear, setCustomGear] = useState<GearPreset[]>(loadCustomGear);
+  const [customOpen, setCustomOpen] = useState(false);
   const [sunHour, setSunHour] = useState(14);
   const [customName, setCustomName] = useState('');
   const [customWidthM, setCustomWidthM] = useState(3.2);
@@ -289,7 +291,12 @@ export default function App() {
       color: '#6366f1',
       badge: '⛺ 내 텐트',
     };
-    // 브라우저에 저장해 두면 다음에 열어도 목록에 남아 있어요.
+    saveCustomGear(preset);
+    setCustomName('');
+  };
+
+  // 브라우저에 저장해 두면 다음에 열어도 목록에 남고, 바로 자리에도 올려요.
+  const saveCustomGear = (preset: GearPreset) => {
     const next = [preset, ...customGear];
     setCustomGear(next);
     try {
@@ -298,7 +305,12 @@ export default function App() {
       /* 저장 공간이 막혀 있어도 이번 화면에서는 쓸 수 있어요 */
     }
     addGear(preset);
-    setCustomName('');
+  };
+
+  // AI가 크기를 못 찾았을 때: 직접 입력 칸을 열고 이름을 채워 줍니다.
+  const openManualEntry = (name: string) => {
+    setCustomName(name);
+    setCustomOpen(true);
   };
 
   const removeCustomGear = (id: string) => {
@@ -741,6 +753,8 @@ export default function App() {
               )}
             </div>
 
+            {gearQuery.trim().length >= 2 && <GearLookup query={gearQuery} onSave={saveCustomGear} onManual={openManualEntry} />}
+
             {!isGearSearch && (
               <>
                 <div className="grid grid-cols-2 gap-2">
@@ -784,7 +798,8 @@ export default function App() {
             <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1 scrollbar-thin">
               {gearList.length === 0 && (
                 <p className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-base text-slate-600">
-                  찾는 장비가 없어요. 다른 말로 검색하시거나, 아래 <strong>"크기 직접 넣기"</strong>로 내 텐트를 만들어 보세요.
+                  목록에는 없어요. {gearQuery.trim().length >= 2 ? <>위의 <strong>"인터넷에서 규격 찾기"</strong>를 누르거나, </> : '다른 말로 검색하시거나, '}
+                  아래 <strong>"크기 직접 넣기"</strong>로 내 텐트를 만들어 보세요.
                 </p>
               )}
               {gearList.map((g) => (
@@ -819,7 +834,11 @@ export default function App() {
             </div>
 
             {(gearTab === 'tent' || isGearSearch) && (
-              <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <details
+                open={customOpen}
+                onToggle={(e) => setCustomOpen(e.currentTarget.open)}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-3"
+              >
                 <summary className="cursor-pointer text-base font-bold text-slate-800">내 텐트 크기 직접 넣기 (저장돼요)</summary>
                 <form onSubmit={addCustomTent} className="mt-3 space-y-2">
                   <input

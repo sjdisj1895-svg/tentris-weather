@@ -6,3 +6,4 @@ dist
 !.vscode/extensions.json
 .env
 .env.*
+!.env.example
