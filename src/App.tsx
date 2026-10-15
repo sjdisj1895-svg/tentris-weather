@@ -1,1120 +1,993 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Tent,
-  Wind,
-  Sun,
-  Droplets,
-  Flame,
   AlertTriangle,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Check,
   CheckCircle2,
-  RotateCw,
-  Trash2,
-  Plus,
-  Compass,
-  Zap,
-  CloudSun,
-  Sparkles,
-  Download,
-  RefreshCw,
+  ChevronLeft,
+  ChevronRight,
+  CloudRain,
+  Copy,
+  Droplets,
+  Info,
+  LocateFixed,
   MapPin,
+  Minus,
+  Plus,
+  Printer,
+  RefreshCw,
+  RotateCcw,
+  RotateCw,
+  Search,
   ShieldAlert,
-  Layers
+  Sparkles,
+  Tent,
+  Thermometer,
+  Trash2,
+  Wind,
+  Zap,
 } from 'lucide-react';
-import {
-  CAMPGROUND_LOCATIONS,
-  GEAR_PRESETS,
-  GearPreset,
-  PlacedItem,
-  CampgroundLocation
-} from './presets';
+import Board from './components/Board';
+import { analyze, BOARD_PADDING_M, Level, SurfaceType } from './analysis';
+import { CAMPGROUNDS, PLACE_TYPE_INFO, REGION_GROUPS, RegionGroup } from './campgrounds';
+import { GEAR_PRESETS, GearPreset, gearEmoji, PlacedItem } from './presets';
+import { DayForecast, fetchForecast, Place, searchPlaces, weatherCodeInfo, windFromLabel } from './weather';
 
-const SCALE_PX_PER_M = 64; // 1 meter = 64px on canvas
-const CANVAS_PADDING_M = 1.8; // Extra space around deck/site to see guyropes & obstacles
+type Step = 1 | 2 | 3 | 4;
+type WeatherStatus = 'idle' | 'loading' | 'ok' | 'error';
+type GearTab = 'tent' | 'tarp' | 'etc';
 
-const WIND_DIRECTIONS = [
-  { label: '북풍 (N→S)', deg: 180, short: 'N' },
-  { label: '북서풍 (NW→SE)', deg: 135, short: 'NW' },
-  { label: '서풍 (W→E)', deg: 90, short: 'W' },
-  { label: '남서풍 (SW→NE)', deg: 45, short: 'SW' },
-  { label: '남풍 (S→N)', deg: 0, short: 'S' },
-  { label: '북동풍 (NE→SW)', deg: 225, short: 'NE' },
-  { label: '동풍 (E→W)', deg: 270, short: 'E' },
+const STEPS: { n: Step; label: string }[] = [
+  { n: 1, label: '장소·날짜' },
+  { n: 2, label: '자리 크기' },
+  { n: 3, label: '장비 놓기' },
+  { n: 4, label: '결과·준비물' },
 ];
 
+const LEVEL_STYLE: Record<Level, { box: string; text: string; icon: React.ReactNode }> = {
+  ok: { box: 'bg-emerald-50 border-emerald-300', text: 'text-emerald-900', icon: <CheckCircle2 className="w-7 h-7 text-emerald-600 shrink-0" /> },
+  warn: { box: 'bg-amber-50 border-amber-300', text: 'text-amber-900', icon: <AlertTriangle className="w-7 h-7 text-amber-600 shrink-0" /> },
+  danger: { box: 'bg-rose-50 border-rose-300', text: 'text-rose-900', icon: <ShieldAlert className="w-7 h-7 text-rose-600 shrink-0" /> },
+};
+
+// 바람이 "불어오는 쪽" 기준으로 보여주고, 내부 값은 "향하는 방향"으로 저장
+const WIND_OPTIONS = [
+  { toDeg: 180, label: '북쪽에서 불어와요' },
+  { toDeg: 225, label: '북동쪽에서 불어와요' },
+  { toDeg: 270, label: '동쪽에서 불어와요' },
+  { toDeg: 315, label: '남동쪽에서 불어와요' },
+  { toDeg: 0, label: '남쪽에서 불어와요' },
+  { toDeg: 45, label: '남서쪽에서 불어와요' },
+  { toDeg: 90, label: '서쪽에서 불어와요' },
+  { toDeg: 135, label: '북서쪽에서 불어와요' },
+];
+
+const SITE_PRESETS = [
+  { label: '작은 자리', w: 4, l: 4 },
+  { label: '보통 자리', w: 6, l: 4.5 },
+  { label: '큰 자리', w: 8, l: 6 },
+  { label: '아주 큰 자리', w: 10, l: 7 },
+];
+
+const SURFACES: { id: SurfaceType; emoji: string; label: string; hint: string }[] = [
+  { id: 'deck', emoji: '🪵', label: '나무 데크', hint: '데크용 못(오징어펙)을 써요' },
+  { id: 'gravel', emoji: '🪨', label: '파쇄석', hint: '길고 튼튼한 팩이 필요해요' },
+  { id: 'grass', emoji: '🌿', label: '잔디·흙', hint: '일반 팩을 박을 수 있어요' },
+];
+
+const presetById = (id: string) => GEAR_PRESETS.find((g) => g.id === id)!;
+
+const initialItems = (): PlacedItem[] => [
+  { ...presetById('naturehike-dome'), uid: 'init-tent', xM: 2.4, yM: 2.25, rotation: 0 },
+  { ...presetById('brazier-fire'), uid: 'init-fire', xM: 5.0, yM: 3.4, rotation: 0 },
+  { ...presetById('power-box'), uid: 'init-power', xM: -0.6, yM: 0.5, rotation: 0 },
+  { ...presetById('tree-obstacle'), uid: 'init-tree', xM: 5.5, yM: 0.6, rotation: 0 },
+];
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+// ---------- 작은 UI 조각 ----------
+function Hint({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2.5 rounded-xl bg-sky-50 border border-sky-200 px-4 py-3 text-sky-900">
+      <Info className="w-5 h-5 mt-0.5 shrink-0 text-sky-600" />
+      <p className="text-base leading-relaxed">{children}</p>
+    </div>
+  );
+}
+
+function SizeStepper(props: { label: string; value: number; onChange: (v: number) => void; min: number; max: number }) {
+  const { label, value, onChange, min, max } = props;
+  const set = (v: number) => onChange(clamp(Number(v.toFixed(1)), min, max));
+  return (
+    <div className="rounded-xl border-2 border-slate-200 bg-white p-3">
+      <p className="text-base font-bold text-slate-700 mb-2">{label}</p>
+      <div className="flex items-center justify-between gap-2">
+        <button
+          onClick={() => set(value - 0.5)}
+          aria-label={`${label} 줄이기`}
+          className="w-14 h-14 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 flex items-center justify-center"
+        >
+          <Minus className="w-7 h-7" />
+        </button>
+        <span className="text-3xl font-extrabold text-slate-900 tabular-nums">{value}m</span>
+        <button
+          onClick={() => set(value + 0.5)}
+          aria-label={`${label} 늘리기`}
+          className="w-14 h-14 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white flex items-center justify-center"
+        >
+          <Plus className="w-7 h-7" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function IndexCard(props: { icon: React.ReactNode; title: string; level: Level; value: string; sub: string }) {
+  const s = LEVEL_STYLE[props.level];
+  return (
+    <div className={`rounded-2xl border-2 p-4 ${s.box}`}>
+      <div className={`flex items-center gap-2 text-base font-bold ${s.text}`}>
+        {props.icon}
+        {props.title}
+      </div>
+      <p className={`mt-1 text-xl font-extrabold ${s.text}`}>{props.value}</p>
+      <p className="text-base text-slate-600 mt-0.5">{props.sub}</p>
+    </div>
+  );
+}
+
 export default function App() {
-  // 1. Site Config State
-  const [siteWidthM, setSiteWidthM] = useState<number>(6.0);
-  const [siteLengthM, setSiteLengthM] = useState<number>(4.5);
-  const [surfaceType, setSurfaceType] = useState<'deck' | 'gravel' | 'grass'>('deck');
-  const [selectedCampground, setSelectedCampground] = useState<CampgroundLocation>(CAMPGROUND_LOCATIONS[0]);
-  const [showGuyropes, setShowGuyropes] = useState<boolean>(true);
+  const [step, setStep] = useState<Step>(1);
 
-  // 2. Weather & Environment Simulation State
-  const [windDirDeg, setWindDirDeg] = useState<number>(135); // Default NW wind blowing SE
-  const [windGustMs, setWindGustMs] = useState<number>(9.5); // m/s
-  const [minTempC, setMinTempC] = useState<number>(6); // Base forecast temp
-  const [humidityPct, setHumidityPct] = useState<number>(82); // %
-  const [cloudCoverPct, setCloudCoverPct] = useState<number>(20); // %
-  const [sunHour, setSunHour] = useState<number>(14); // 08:00 ~ 18:00
-  const [isLoadingWeather, setIsLoadingWeather] = useState<boolean>(false);
-  const [weatherFetchedAt, setWeatherFetchedAt] = useState<string | null>(null);
+  // 1단계: 장소와 날씨
+  const [place, setPlace] = useState<Place | null>(null);
+  const [region, setRegion] = useState<RegionGroup | '전체'>('전체');
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Place[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [weatherStatus, setWeatherStatus] = useState<WeatherStatus>('idle');
+  const [days, setDays] = useState<DayForecast[]>([]);
+  const [dayIdx, setDayIdx] = useState(0);
+  const [elevationM, setElevationM] = useState(0);
 
-  // 3. Placed Items on Canvas
-  const [items, setItems] = useState<PlacedItem[]>([
-    {
-      ...GEAR_PRESETS[0], // 에르젠 이화지작
-      uid: 'init-tent-1',
-      xM: 2.3,
-      yM: 2.25,
-      rotation: 90,
-    },
-    {
-      ...GEAR_PRESETS[7], // 화로대
-      uid: 'init-fire-1',
-      xM: 4.8,
-      yM: 2.8,
-      rotation: 0,
-    },
-    {
-      ...GEAR_PRESETS[9], // 배전반
-      uid: 'init-power-1',
-      xM: -0.6,
-      yM: 0.5,
-      rotation: 0,
-    },
-    {
-      ...GEAR_PRESETS[8], // 소나무
-      uid: 'init-tree-1',
-      xM: 5.5,
-      yM: 0.6,
-      rotation: 0,
-    }
-  ]);
+  // 날씨 값 (예보에서 채워지고, 4단계에서 직접 고칠 수도 있음)
+  const [windGustMs, setWindGustMs] = useState(6.5);
+  const [windDirDeg, setWindDirDeg] = useState(135);
+  const [minTempC, setMinTempC] = useState(10);
+  const [humidityPct, setHumidityPct] = useState(70);
+  const [cloudCoverPct, setCloudCoverPct] = useState(30);
+  const [rainProbPct, setRainProbPct] = useState(10);
+  const [rainMm, setRainMm] = useState(0);
 
-  const [selectedUid, setSelectedUid] = useState<string | null>('init-tent-1');
+  // 2단계: 자리
+  const [siteWidthM, setSiteWidthM] = useState(6);
+  const [siteLengthM, setSiteLengthM] = useState(4.5);
+  const [surfaceType, setSurfaceType] = useState<SurfaceType>('deck');
+  const [showRopes, setShowRopes] = useState(true);
 
-  // Custom gear modal/form state
+  // 3단계: 장비
+  const [items, setItems] = useState<PlacedItem[]>(initialItems);
+  const [selectedUid, setSelectedUid] = useState<string | null>('init-tent');
+  const [gearTab, setGearTab] = useState<GearTab>('tent');
+  const [sunHour, setSunHour] = useState(14);
   const [customName, setCustomName] = useState('');
   const [customWidthM, setCustomWidthM] = useState(3.2);
   const [customLengthM, setCustomLengthM] = useState(4.8);
 
-  // Dragging Ref
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-  const draggingRef = useRef<{ uid: string; offsetX: number; offsetY: number } | null>(null);
+  // 4단계
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [copied, setCopied] = useState(false);
 
-  // Fetch Real Weather from Open-Meteo API (No API key required!)
-  const fetchLiveWeather = async (loc: CampgroundLocation) => {
-    setIsLoadingWeather(true);
+  // ---------- 날씨 ----------
+  const applyDay = (d: DayForecast) => {
+    setWindGustMs(d.gustMs);
+    setWindDirDeg(d.windToDeg);
+    setMinTempC(d.tMinC);
+    setHumidityPct(d.humidityDawnPct);
+    setCloudCoverPct(d.cloudEveningPct);
+    setRainProbPct(d.rainProbPct);
+    setRainMm(d.rainMm);
+  };
+
+  const loadPlace = async (p: Place) => {
+    setPlace(p);
+    setWeatherStatus('loading');
     try {
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover&wind_speed_unit=ms&timezone=Asia%2FSeoul`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data && data.current) {
-        const cur = data.current;
-        setWindGustMs(Number((cur.wind_gusts_10m ?? cur.wind_speed_10m ?? 6.5).toFixed(1)));
-        setWindDirDeg(Math.round(cur.wind_direction_10m ?? 135));
-        setMinTempC(Math.round((cur.temperature_2m ?? 10) - 4)); // Estimate dawn low
-        setHumidityPct(Math.round(cur.relative_humidity_2m ?? 75));
-        setCloudCoverPct(Math.round(cur.cloud_cover ?? 25));
-        setWeatherFetchedAt(new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
-      }
+      const f = await fetchForecast(p.lat, p.lon);
+      setDays(f.days);
+      setElevationM(f.elevationM);
+      setDayIdx(0);
+      applyDay(f.days[0]);
+      setWeatherStatus('ok');
     } catch (e) {
-      console.error('Open-Meteo fetch failed, using simulation sliders:', e);
-    } finally {
-      setIsLoadingWeather(false);
+      console.error(e);
+      setWeatherStatus('error');
     }
   };
 
-  // Add Preset Gear
-  const handleAddGear = (preset: GearPreset) => {
-    const newUid = `${preset.id}-${Date.now()}`;
-    const newItem: PlacedItem = {
-      ...preset,
-      uid: newUid,
-      xM: Number((siteWidthM / 2).toFixed(2)),
-      yM: Number((siteLengthM / 2).toFixed(2)),
-      rotation: 0,
-    };
-    setItems((prev) => [...prev, newItem]);
-    setSelectedUid(newUid);
+  const pickDay = (i: number) => {
+    setDayIdx(i);
+    applyDay(days[i]);
   };
 
-  const handleAddCustomGear = (e: React.FormEvent) => {
+  const runSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSearchError(null);
+    if (query.trim().length < 2) {
+      setSearchError('두 글자 이상 입력해 주세요.');
+      return;
+    }
+    setSearching(true);
+    try {
+      setSearchResults(await searchPlaces(query));
+    } catch (err) {
+      console.error(err);
+      setSearchError('검색하지 못했어요. 인터넷 연결을 확인해 주세요.');
+      setSearchResults(null);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const useMyLocation = () => {
+    setSearchError(null);
+    if (!navigator.geolocation) {
+      setSearchError('이 기기에서는 내 위치를 사용할 수 없어요.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => loadPlace({ name: '내 위치', region: '현재 위치 기준', lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => setSearchError('위치를 가져오지 못했어요. 브라우저의 위치 허용을 확인해 주세요.'),
+      { timeout: 10000 }
+    );
+  };
+
+  // ---------- 장비 ----------
+  const selectedItem = items.find((i) => i.uid === selectedUid) ?? null;
+
+  const addGear = (preset: GearPreset) => {
+    const uid = `${preset.id}-${Date.now()}`;
+    setItems((prev) => [
+      ...prev,
+      { ...preset, uid, xM: Number((siteWidthM / 2).toFixed(2)), yM: Number((siteLengthM / 2).toFixed(2)), rotation: 0 },
+    ]);
+    setSelectedUid(uid);
+  };
+
+  const addCustomTent = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customName.trim()) return;
-    const newPreset: GearPreset = {
+    addGear({
       id: 'custom-gear',
-      brand: '커스텀',
+      brand: '직접 입력',
       name: customName.trim(),
       category: 'tent',
-      widthM: Number(customWidthM),
-      lengthM: Number(customLengthM),
+      widthM: customWidthM,
+      lengthM: customLengthM,
       ropeMarginM: 0.9,
       windLimitMs: 12,
       color: '#6366f1',
       badge: '⛺ 내 텐트',
-    };
-    handleAddGear(newPreset);
+    });
     setCustomName('');
   };
 
-  // Rotate / Delete Selected Gear
-  const rotateSelected = (deltaDeg: number) => {
+  const updateSelected = (fn: (it: PlacedItem) => PlacedItem) => {
     if (!selectedUid) return;
-    setItems((prev) =>
-      prev.map((item) =>
-        item.uid === selectedUid
-          ? { ...item, rotation: (item.rotation + deltaDeg + 360) % 360 }
-          : item
-      )
-    );
+    setItems((prev) => prev.map((it) => (it.uid === selectedUid ? fn(it) : it)));
   };
+
+  const moveSelected = (dx: number, dy: number) => {
+    const limit = BOARD_PADDING_M - 0.3;
+    updateSelected((it) => ({
+      ...it,
+      xM: Number(clamp(it.xM + dx, -limit, siteWidthM + limit).toFixed(2)),
+      yM: Number(clamp(it.yM + dy, -limit, siteLengthM + limit).toFixed(2)),
+    }));
+  };
+
+  const rotateSelected = (deg: number) => updateSelected((it) => ({ ...it, rotation: (it.rotation + deg + 360) % 360 }));
 
   const deleteSelected = () => {
     if (!selectedUid) return;
-    setItems((prev) => prev.filter((item) => item.uid !== selectedUid));
+    setItems((prev) => prev.filter((i) => i.uid !== selectedUid));
     setSelectedUid(null);
   };
 
-  // Dragging Handlers
-  const handlePointerDown = (e: React.PointerEvent, item: PlacedItem) => {
-    e.stopPropagation();
-    setSelectedUid(item.uid);
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const itemPxX = (item.xM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-    const itemPxY = (item.yM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-    draggingRef.current = {
-      uid: item.uid,
-      offsetX: e.clientX - rect.left - itemPxX,
-      offsetY: e.clientY - rect.top - itemPxY,
-    };
+  // ---------- 분석 ----------
+  const analysis = useMemo(
+    () =>
+      analyze({ items, siteWidthM, siteLengthM, surfaceType, windGustMs, windDirDeg, minTempC, humidityPct, cloudCoverPct, rainProbPct, rainMm, elevationM }),
+    [items, siteWidthM, siteLengthM, surfaceType, windGustMs, windDirDeg, minTempC, humidityPct, cloudCoverPct, rainProbPct, rainMm, elevationM]
+  );
+
+  const day = days[dayIdx] as DayForecast | undefined;
+  const placeLabel = place ? place.name : '장소 미선택';
+  const dateLabel = day ? `${day.dayLabel} (${day.dateLabel})` : '';
+
+  const copySummary = async () => {
+    const lines = [
+      `⛺ 캠핑 준비 요약 - ${placeLabel}${dateLabel ? ` / ${dateLabel}` : ''}`,
+      `결론: ${analysis.headline}`,
+      `바람 ${windGustMs}m/s · 새벽 ${minTempC}℃ · 비 ${rainProbPct}% · 습도 ${humidityPct}%`,
+      '',
+      '[조심할 점]',
+      ...(analysis.issues.length ? analysis.issues.map((i) => `- ${i.title}: ${i.detail}`) : ['- 특별히 없어요']),
+      '',
+      '[준비물]',
+      ...analysis.checklist.map((c) => `- ${c.item} (${c.reason})`),
+    ];
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      window.prompt('아래 내용을 복사해 주세요', lines.join('\n'));
+    }
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!draggingRef.current || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const rawPxX = e.clientX - rect.left - draggingRef.current.offsetX;
-    const rawPxY = e.clientY - rect.top - draggingRef.current.offsetY;
+  // ---------- 1단계 화면 ----------
+  const localMatches = query.trim().length >= 1 ? CAMPGROUNDS.filter((c) => c.name.includes(query.trim())) : [];
+  const visibleCampgrounds = CAMPGROUNDS.filter((c) => region === '전체' || c.region === region);
 
-    const newXM = Number((rawPxX / SCALE_PX_PER_M - CANVAS_PADDING_M).toFixed(2));
-    const newYM = Number((rawPxY / SCALE_PX_PER_M - CANVAS_PADDING_M).toFixed(2));
+  const renderStep1 = () => (
+    <div className="space-y-5">
+      <Hint>
+        가시려는 곳을 <strong>목록에서 누르거나</strong>, 동네·캠핑장 이름을 <strong>검색</strong>해 주세요. 장소를 고르면 날씨가 자동으로 나와요.
+      </Hint>
 
-    setItems((prev) =>
-      prev.map((it) =>
-        it.uid === draggingRef.current?.uid
-          ? {
-              ...it,
-              xM: Math.max(-CANVAS_PADDING_M + 0.3, Math.min(siteWidthM + CANVAS_PADDING_M - 0.3, newXM)),
-              yM: Math.max(-CANVAS_PADDING_M + 0.3, Math.min(siteLengthM + CANVAS_PADDING_M - 0.3, newYM)),
-            }
-          : it
-      )
-    );
-  };
-
-  const handlePointerUp = () => {
-    draggingRef.current = null;
-  };
-
-  // Bounding Box Helper (considers rotation)
-  const getItemBounds = (item: PlacedItem, includeRope = false) => {
-    const rad = (item.rotation * Math.PI) / 180;
-    const margin = includeRope ? item.ropeMarginM * 2 : 0;
-    const w = item.widthM + margin;
-    const l = item.lengthM + margin;
-    const effW = Math.abs(w * Math.cos(rad)) + Math.abs(l * Math.sin(rad));
-    const effL = Math.abs(w * Math.sin(rad)) + Math.abs(l * Math.cos(rad));
-    return {
-      left: item.xM - effW / 2,
-      right: item.xM + effW / 2,
-      top: item.yM - effL / 2,
-      bottom: item.yM + effL / 2,
-      effW,
-      effL,
-    };
-  };
-
-  const isBodyOutOfSite = (item: PlacedItem) => {
-    if (item.category === 'obstacle') return false;
-    const b = getItemBounds(item, false);
-    return b.left < 0 || b.right > siteWidthM || b.top < 0 || b.bottom > siteLengthM;
-  };
-
-  const isRopeOutOfSite = (item: PlacedItem) => {
-    if (item.ropeMarginM <= 0) return false;
-    const b = getItemBounds(item, true);
-    return b.left < 0 || b.right > siteWidthM || b.top < 0 || b.bottom > siteLengthM;
-  };
-
-  // --- 2+4 SYNERGY ANALYTICS ---
-  const analysis = useMemo(() => {
-    const tentsAndTarps = items.filter((i) => i.category === 'tent' || i.category === 'tarp');
-    const tarps = items.filter((i) => i.category === 'tarp');
-    const fires = items.filter((i) => i.category === 'fire');
-    const powerBoxes = items.filter((i) => i.id === 'power-box');
-
-    // 1. Out of deck check
-    const bodyOutItems = tentsAndTarps.filter((i) => isBodyOutOfSite(i));
-    const ropeOutItems = tentsAndTarps.filter((i) => !isBodyOutOfSite(i) && isRopeOutOfSite(i));
-
-    // 2. Wind vs Tarp Danger
-    const endangeredTarps = tarps.filter((t) => windGustMs >= t.windLimitMs);
-
-    // 3. Fire Spark (불티) Downwind Check
-    // windDirDeg is the direction the wind blows TOWARDS in our visual arrow (0=N, 90=E, 180=S, 270=W)
-    const windRad = ((windDirDeg - 90) * Math.PI) / 180;
-    const windVecX = Math.cos(windRad);
-    const windVecY = Math.sin(windRad);
-
-    let fireSparkWarning = false;
-    fires.forEach((fire) => {
-      tentsAndTarps.forEach((tent) => {
-        const dx = tent.xM - fire.xM;
-        const dy = tent.yM - fire.yM;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 0.2 && dist < 3.6) {
-          // Dot product to see if tent is downwind of fire
-          const dot = (dx * windVecX + dy * windVecY) / dist;
-          if (dot > 0.55) {
-            fireSparkWarning = true;
-          }
-        }
-      });
-    });
-
-    // 4. Power Cord Length Calculation
-    let maxPowerDistanceM: number | null = null;
-    if (powerBoxes.length > 0 && tentsAndTarps.length > 0) {
-      const p = powerBoxes[0];
-      const mainTent = tentsAndTarps[0];
-      const straightDist = Math.hypot(mainTent.xM - p.xM, mainTent.yM - p.yM);
-      // Add 25% routing slack
-      maxPowerDistanceM = Number((straightDist * 1.25).toFixed(1));
-    }
-
-    // 5. Elevation Temperature Correction (-0.65°C per 100m)
-    const elevationDropC = Number(((selectedCampground.elevationM / 100) * 0.65).toFixed(1));
-    const realFeelMinTempC = Number((minTempC - elevationDropC).toFixed(1));
-
-    // 6. Dew Point & Condensation Risk (Magnus approximation)
-    const dewPointC = Number((realFeelMinTempC - (100 - humidityPct) / 5).toFixed(1));
-    const tempDewDiff = realFeelMinTempC - dewPointC;
-    const condensationRisk =
-      humidityPct >= 80 || tempDewDiff <= 2.5
-        ? '매우 높음 (결로 폭탄 주의)'
-        : humidityPct >= 65
-        ? '보통 (환기/벤틸레이션 권장)'
-        : '낮음 (쾌적)';
-
-    // 7. Stargazing Score
-    const starScore = Math.max(
-      10,
-      Math.min(100, Math.round(100 - cloudCoverPct * 0.8 - (humidityPct > 85 ? 15 : 0)))
-    );
-
-    // 8. Smart Packing Checklist Generation
-    const checklist: { item: string; reason: string; urgent: boolean }[] = [];
-
-    if (surfaceType === 'deck') {
-      if (bodyOutItems.length > 0 || ropeOutItems.length > 0) {
-        checklist.push({
-          item: '오징어펙(데크펙) 10개 + 단조펙 30cm 8개 혼합',
-          reason: '텐트/가이로프 일부가 데크 밖으로 나가 데크+노지 혼합 팩다운 필수',
-          urgent: true,
-        });
-      } else {
-        checklist.push({
-          item: '오징어펙(데크펙) 12개 & 카라비너',
-          reason: '우드 데크 사이트 전용 고정 장비',
-          urgent: false,
-        });
-      }
-    } else {
-      checklist.push({
-        item: windGustMs >= 8 ? '단조펙 30cm~40cm (강풍용)' : '단조펙 20~30cm 기본 세트',
-        reason: `${surfaceType === 'gravel' ? '파쇄석' : '잔디/노지'} 바닥 및 풍속 ${windGustMs}m/s 대비`,
-        urgent: windGustMs >= 8,
-      });
-    }
-
-    if (windGustMs >= 8.5) {
-      checklist.push({
-        item: '메인폴 스트링 2줄 보강 + 스토퍼 & 스트링 가드',
-        reason: `돌풍 ${windGustMs}m/s 예보로 폴대 휨/파손 방지 필수`,
-        urgent: true,
-      });
-    }
-
-    if (realFeelMinTempC <= 5) {
-      checklist.push({
-        item: '등유난로(또는 팬히터) + 일산화탄소 경보기 + 동계 침낭',
-        reason: `해발 ${selectedCampground.elevationM}m 보정 새벽 체감온도 ${realFeelMinTempC}℃ 대비`,
-        urgent: true,
-      });
-    } else if (realFeelMinTempC <= 13) {
-      checklist.push({
-        item: '전기장판 + 미니 팬히터 (간절기 난방)',
-        reason: `새벽 체감온도 ${realFeelMinTempC}℃ 일교차 대비`,
-        urgent: false,
-      });
-    }
-
-    if (humidityPct >= 78) {
-      checklist.push({
-        item: '타프팬(실링팬) & 결로 닦이용 극세사 타월',
-        reason: `습도 ${humidityPct}% (이슬점 ${dewPointC}℃)로 새벽 텐트 내부 결로 다량 발생 예고`,
-        urgent: false,
-      });
-    }
-
-    if (maxPowerDistanceM !== null) {
-      const recommendedCord = maxPowerDistanceM > 15 ? '30m 리드선' : maxPowerDistanceM > 8 ? '20m 리드선' : '10m 리드선';
-      checklist.push({
-        item: `고용량 방수 전기 릴선 (${recommendedCord})`,
-        reason: `배전반~텐트 여유 포함 예상 필요 길이 약 ${maxPowerDistanceM}m`,
-        urgent: maxPowerDistanceM > 15,
-      });
-    }
-
-    return {
-      bodyOutItems,
-      ropeOutItems,
-      endangeredTarps,
-      fireSparkWarning,
-      maxPowerDistanceM,
-      elevationDropC,
-      realFeelMinTempC,
-      dewPointC,
-      condensationRisk,
-      starScore,
-      checklist,
-    };
-  }, [items, siteWidthM, siteLengthM, surfaceType, windGustMs, windDirDeg, minTempC, humidityPct, cloudCoverPct, selectedCampground]);
-
-  // Sun angle visual calculation (08:00 East -> 13:00 South -> 18:00 West)
-  const sunAzimuthDeg = useMemo(() => {
-    // 8h -> 90deg (East), 13h -> 180deg (South), 18h -> 270deg (West)
-    return 90 + ((sunHour - 8) / 10) * 180;
-  }, [sunHour]);
-
-  const selectedItem = items.find((i) => i.uid === selectedUid) || null;
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/30 to-sky-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-300 shadow-[0_0_18px_-2px_rgba(16,185,129,0.5)]">
-            <Tent className="w-6 h-6" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold tracking-tight text-white">
-                텐트리스 웨더 <span className="brand-gradient font-extrabold">Tentris Weather</span>
-              </h1>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium">
-                2+4 통합 MVP
-              </span>
-            </div>
-            <p className="text-xs text-slate-400">
-              실측 텐트 배치 시뮬레이터 & 실시간 풍향·결로·고도 기온 보정 스마트 피칭 가이드
-            </p>
-          </div>
-        </div>
-
-        {/* Location & Live Open-Meteo Sync */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-lg px-3 py-1.5">
-            <MapPin className="w-4 h-4 text-emerald-400 shrink-0" />
-            <select
-              className="bg-transparent text-xs font-medium text-slate-100 focus:outline-none"
-              value={selectedCampground.name}
-              onChange={(e) => {
-                const found = CAMPGROUND_LOCATIONS.find((c) => c.name === e.target.value);
-                if (found) {
-                  setSelectedCampground(found);
-                  fetchLiveWeather(found);
-                }
-              }}
-            >
-              {CAMPGROUND_LOCATIONS.map((loc) => (
-                <option key={loc.name} value={loc.name} className="bg-slate-900 text-slate-100">
-                  {loc.name} (해발 {loc.elevationM}m)
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={() => fetchLiveWeather(selectedCampground)}
-            disabled={isLoadingWeather}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white transition shadow-sm"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingWeather ? 'animate-spin' : ''}`} />
-            {isLoadingWeather ? '기상청/Open-Meteo 수신중...' : '실시간 기상 연동'}
+      <form onSubmit={runSearch} className="card rounded-2xl p-4 space-y-3 no-print">
+        <label htmlFor="place-q" className="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <Search className="w-6 h-6 text-emerald-600" /> 장소 찾기
+        </label>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            id="place-q"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setSearchResults(null);
+            }}
+            placeholder="예: 가평, 태안, 협재"
+            className="flex-1 h-14 rounded-xl border-2 border-slate-300 px-4 text-lg focus:border-emerald-500 focus:outline-none"
+          />
+          <button type="submit" disabled={searching} className="h-14 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-bold disabled:opacity-60">
+            {searching ? '찾는 중…' : '찾기'}
           </button>
-          {weatherFetchedAt && (
-            <span className="text-[11px] text-emerald-400">✓ {weatherFetchedAt} 실황 반영됨</span>
-          )}
+          <button type="button" onClick={useMyLocation} className="h-14 px-5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-lg font-bold flex items-center justify-center gap-2">
+            <LocateFixed className="w-6 h-6" /> 내 위치
+          </button>
         </div>
-      </header>
+        {searchError && <p className="text-base font-semibold text-rose-600">{searchError}</p>}
 
-      {/* Main 3-Column Layout */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 max-w-[1600px] w-full mx-auto">
-        {/* LEFT PANEL: Site Settings & Gear Presets (3 cols) */}
-        <section className="lg:col-span-3 space-y-4 flex flex-col">
-          {/* Site Size & Surface */}
-          <div className="glass-card rounded-xl p-4 space-y-3">
-            <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <Layers className="w-4 h-4 text-emerald-400" />
-              1. 사이트 규격 & 바닥 설정
-            </h2>
+        {(localMatches.length > 0 || (searchResults && searchResults.length > 0)) && (
+          <div className="space-y-2 pt-1">
+            {localMatches.map((c) => (
+              <button
+                key={c.name}
+                onClick={() => loadPlace({ name: c.name, region: c.region, lat: c.lat, lon: c.lon })}
+                className="w-full text-left rounded-xl border-2 border-slate-200 hover:border-emerald-400 bg-white px-4 py-3 text-lg font-semibold"
+              >
+                {PLACE_TYPE_INFO[c.type].emoji} {c.name} <span className="text-base font-normal text-slate-500">· {c.region}</span>
+              </button>
+            ))}
+            {searchResults?.map((r) => (
+              <button
+                key={`${r.name}-${r.lat}-${r.lon}`}
+                onClick={() => loadPlace(r)}
+                className="w-full text-left rounded-xl border-2 border-slate-200 hover:border-emerald-400 bg-white px-4 py-3 text-lg font-semibold"
+              >
+                📍 {r.name} <span className="text-base font-normal text-slate-500">· {r.region}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {searchResults && searchResults.length === 0 && localMatches.length === 0 && (
+          <p className="text-base text-slate-600">검색 결과가 없어요. 더 큰 지명(예: 시·군 이름)으로 다시 찾아 보세요.</p>
+        )}
+      </form>
 
-            <div className="grid grid-cols-2 gap-2.5">
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1">가로 폭 (m)</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="2.5"
-                  max="12"
-                  value={siteWidthM}
-                  onChange={(e) => setSiteWidthM(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm font-semibold text-white"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-slate-400 block mb-1">세로 깊이 (m)</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="2.5"
-                  max="12"
-                  value={siteLengthM}
-                  onChange={(e) => setSiteLengthM(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm font-semibold text-white"
-                />
-              </div>
+      <div className="card rounded-2xl p-4 space-y-3 no-print">
+        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <MapPin className="w-6 h-6 text-emerald-600" /> 지역에서 고르기
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          {(['전체', ...REGION_GROUPS] as (RegionGroup | '전체')[]).map((r) => (
+            <button
+              key={r}
+              onClick={() => setRegion(r)}
+              className={`h-12 px-5 rounded-full text-base font-bold border-2 ${
+                region === r ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5 max-h-[420px] overflow-y-auto pr-1 scrollbar-thin">
+          {visibleCampgrounds.map((c) => {
+            const active = place?.name === c.name;
+            return (
+              <button
+                key={c.name}
+                onClick={() => loadPlace({ name: c.name, region: c.region, lat: c.lat, lon: c.lon })}
+                className={`text-left rounded-xl border-2 px-4 py-3 min-h-[64px] ${
+                  active ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 bg-white hover:border-emerald-300'
+                }`}
+              >
+                <span className="block text-lg font-bold text-slate-900">{PLACE_TYPE_INFO[c.type].emoji} {c.name}</span>
+                <span className="block text-sm text-slate-500">{c.region} · {PLACE_TYPE_INFO[c.type].label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-sm text-slate-500">위치는 지역 대표 지점 기준이에요. 정확한 캠핑장 동네는 위의 검색으로 찾아 주세요.</p>
+      </div>
+
+      {place && (
+        <div className="card rounded-2xl p-4 space-y-3">
+          <h2 className="text-lg font-bold text-slate-800">
+            📅 언제 가세요? <span className="text-emerald-700">{place.name}</span>
+            {weatherStatus === 'ok' && <span className="text-base font-normal text-slate-500"> · 해발 {elevationM}m</span>}
+          </h2>
+
+          {weatherStatus === 'loading' && (
+            <p className="text-lg text-slate-600 flex items-center gap-2">
+              <RefreshCw className="w-5 h-5 animate-spin" /> 날씨를 불러오는 중이에요…
+            </p>
+          )}
+          {weatherStatus === 'error' && (
+            <div className="space-y-2">
+              <p className="text-base font-semibold text-rose-600">날씨를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.</p>
+              <button onClick={() => loadPlace(place)} className="h-12 px-5 rounded-xl bg-emerald-600 text-white text-base font-bold">
+                다시 시도
+              </button>
             </div>
-
-            <div>
-              <label className="text-[11px] text-slate-400 block mb-1">바닥 재질 (팩 추천 연동)</label>
-              <div className="grid grid-cols-3 gap-1.5">
-                {[
-                  { id: 'deck', label: '🪵 우드 데크' },
-                  { id: 'gravel', label: '🪨 파쇄석' },
-                  { id: 'grass', label: '🌿 노지/잔디' },
-                ].map((s) => (
+          )}
+          {weatherStatus === 'ok' && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+              {days.map((d, i) => {
+                const w = weatherCodeInfo(d.code);
+                const active = i === dayIdx;
+                return (
                   <button
-                    key={s.id}
-                    onClick={() => setSurfaceType(s.id as any)}
-                    className={`py-1.5 px-2 rounded-lg text-xs font-medium border transition ${
-                      surfaceType === s.id
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                    key={d.date}
+                    onClick={() => pickDay(i)}
+                    className={`rounded-xl border-2 p-2.5 text-center ${
+                      active ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200' : 'border-slate-200 bg-white hover:border-emerald-300'
                     }`}
                   >
-                    {s.label}
+                    <div className="text-lg font-extrabold text-slate-900">{d.dayLabel}</div>
+                    <div className="text-sm text-slate-500">{d.dateLabel}</div>
+                    <div className="text-3xl my-0.5">{w.emoji}</div>
+                    <div className="text-sm font-semibold text-slate-700">{w.label}</div>
+                    <div className="text-base font-bold text-slate-900">
+                      <span className="text-sky-700">{d.tMinC}°</span> / <span className="text-rose-600">{d.tMaxC}°</span>
+                    </div>
+                    <div className="text-sm text-slate-600">☔ {d.rainProbPct}%</div>
+                    <div className="text-sm text-slate-600">💨 {d.gustMs}m/s</div>
                   </button>
-                ))}
-              </div>
+                );
+              })}
             </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
-            <label className="flex items-center justify-between pt-1 cursor-pointer">
-              <span className="text-xs text-slate-300 font-medium">가이로프(스트링) 안전 반경 표시</span>
-              <input
-                type="checkbox"
-                checked={showGuyropes}
-                onChange={(e) => setShowGuyropes(e.target.checked)}
-                className="accent-emerald-500 w-4 h-4 rounded"
-              />
-            </label>
+  // ---------- 2단계 화면 ----------
+  const renderStep2 = () => (
+    <div className="space-y-5">
+      <Hint>
+        예약한 자리(사이트)의 크기를 알려 주세요. 정확히 모르시면 <strong>아래 큰 버튼 중 가까운 것</strong>을 누르시면 돼요.
+      </Hint>
+
+      <div className="card rounded-2xl p-4 space-y-3">
+        <h2 className="text-lg font-bold text-slate-800">1. 자리 크기 (대략 이 정도예요)</h2>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+          {SITE_PRESETS.map((p) => {
+            const active = p.w === siteWidthM && p.l === siteLengthM;
+            return (
+              <button
+                key={p.label}
+                onClick={() => {
+                  setSiteWidthM(p.w);
+                  setSiteLengthM(p.l);
+                }}
+                className={`rounded-xl border-2 py-4 px-2 text-center ${
+                  active ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 bg-white hover:border-emerald-300'
+                }`}
+              >
+                <span className="block text-lg font-extrabold text-slate-900">{p.label}</span>
+                <span className="block text-base text-slate-600">가로 {p.w}m × 세로 {p.l}m</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-base font-semibold text-slate-700 pt-1">직접 맞추려면 − + 버튼을 누르세요</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <SizeStepper label="가로 (옆으로 긴 쪽)" value={siteWidthM} onChange={setSiteWidthM} min={2.5} max={12} />
+          <SizeStepper label="세로 (앞뒤로 깊은 쪽)" value={siteLengthM} onChange={setSiteLengthM} min={2.5} max={12} />
+        </div>
+      </div>
+
+      <div className="card rounded-2xl p-4 space-y-3">
+        <h2 className="text-lg font-bold text-slate-800">2. 바닥은 어떤가요?</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          {SURFACES.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => setSurfaceType(s.id)}
+              className={`rounded-xl border-2 p-4 text-center ${
+                surfaceType === s.id ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 bg-white hover:border-emerald-300'
+              }`}
+            >
+              <span className="block text-4xl">{s.emoji}</span>
+              <span className="block text-lg font-extrabold text-slate-900 mt-1">{s.label}</span>
+              <span className="block text-base text-slate-600">{s.hint}</span>
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 cursor-pointer">
+          <span className="text-base font-semibold text-slate-800">텐트 줄이 닿는 범위를 점선으로 보기</span>
+          <input type="checkbox" checked={showRopes} onChange={(e) => setShowRopes(e.target.checked)} className="w-7 h-7 accent-emerald-600" />
+        </label>
+      </div>
+    </div>
+  );
+
+  // ---------- 3단계 화면 ----------
+  const gearList = GEAR_PRESETS.filter((g) =>
+    gearTab === 'tent' ? g.category === 'tent' : gearTab === 'tarp' ? g.category === 'tarp' : g.category !== 'tent' && g.category !== 'tarp'
+  );
+
+  const renderVerdict = (compact: boolean) => {
+    const s = LEVEL_STYLE[analysis.level];
+    return (
+      <div className={`rounded-2xl border-2 p-4 ${s.box}`}>
+        <div className="flex items-center gap-3">
+          {s.icon}
+          <p className={`text-xl font-extrabold ${s.text}`}>{analysis.headline}</p>
+        </div>
+        {!compact && analysis.issues.length === 0 && <p className="mt-2 text-base text-slate-700">장비 배치와 날씨 모두 걱정할 부분이 보이지 않아요.</p>}
+        {analysis.issues.length > 0 && (
+          <ul className="mt-3 space-y-2">
+            {analysis.issues.map((i, idx) => (
+              <li key={idx} className="rounded-xl bg-white/80 border border-white px-3.5 py-2.5">
+                <p className={`text-lg font-bold ${LEVEL_STYLE[i.level].text}`}>
+                  {i.level === 'danger' ? '⛔' : '⚠️'} {i.title}
+                </p>
+                <p className="text-base text-slate-700 leading-relaxed">{i.detail}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  };
+
+  const renderStep3 = () => (
+    <div className="space-y-4">
+      <Hint>
+        <strong>① 오른쪽 아래 목록에서 장비를 눌러 추가</strong>하고, <strong>② 장비를 꾹 눌러 끌거나 방향 버튼</strong>으로 옮겨 보세요. 위험한 곳은 아래 빨간 글씨로 알려드려요.
+      </Hint>
+
+      <div className="flex flex-wrap gap-2 text-base font-semibold">
+        <span className="rounded-full bg-sky-100 text-sky-900 px-3.5 py-1.5">💨 {windFromLabel(windDirDeg)} · {windGustMs}m/s</span>
+        {day && <span className="rounded-full bg-slate-100 text-slate-800 px-3.5 py-1.5">{weatherCodeInfo(day.code).emoji} {dateLabel}</span>}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <div className="xl:col-span-8 space-y-3">
+          <div className="card rounded-2xl p-3 sm:p-4">
+            <Board
+              items={items}
+              setItems={setItems}
+              selectedUid={selectedUid}
+              setSelectedUid={setSelectedUid}
+              siteWidthM={siteWidthM}
+              siteLengthM={siteLengthM}
+              surfaceType={surfaceType}
+              showRopes={showRopes}
+              windDirDeg={windDirDeg}
+              windGustMs={windGustMs}
+              sunHour={sunHour}
+            />
+            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate-600">
+              <span>🟦 파란 줄기: 바람이 가는 방향</span>
+              <span>🟩 장비 아래 초록 막대: 텐트 출입구</span>
+              <span>⬜ 점선 네모: 텐트 줄이 닿는 범위</span>
+              <span>🟨 노란 점선: 전기선 연결</span>
+            </div>
           </div>
 
-          {/* Gear Presets */}
-          <div className="glass-card rounded-xl p-4 space-y-3 flex-1">
-            <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <Tent className="w-4 h-4 text-emerald-400" />
-              2. 장비 꺼내기 (클릭 시 추가)
-            </h2>
+          <div className="card rounded-2xl p-4">
+            <label className="flex items-center justify-between text-base font-bold text-slate-800 mb-1">
+              <span>☀️ 해가 어디쯤 있을까요?</span>
+              <span className="text-amber-700 text-xl">{sunHour}시</span>
+            </label>
+            <input type="range" min={8} max={18} value={sunHour} onChange={(e) => setSunHour(Number(e.target.value))} className="w-full h-10 accent-amber-500" />
+            <p className="text-sm text-slate-500">장비 그림자가 드리운 쪽이 그늘이에요. 아침(8시)은 동쪽, 오후(18시)는 서쪽에 해가 있어요.</p>
+          </div>
+        </div>
 
-            <div className="grid grid-cols-1 gap-1.5 max-h-[310px] overflow-y-auto pr-1">
-              {GEAR_PRESETS.map((preset) => (
+        <div className="xl:col-span-4 space-y-3">
+          <div className="card rounded-2xl p-4 space-y-3">
+            <h2 className="text-lg font-bold text-slate-800">
+              선택한 장비 {selectedItem ? <span className="text-sky-700">· {selectedItem.name.split(' (')[0]}</span> : <span className="text-slate-400">· 없음</span>}
+            </h2>
+            {!selectedItem && <p className="text-base text-slate-600">캔버스의 장비나 아래 "놓인 장비"를 눌러 선택하세요.</p>}
+
+            <div className={`grid grid-cols-[auto_auto_auto] gap-2 justify-center ${selectedItem ? '' : 'opacity-40 pointer-events-none'}`}>
+              <span />
+              <button onClick={() => moveSelected(0, -0.25)} aria-label="위로" className="w-16 h-16 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 flex items-center justify-center">
+                <ArrowUp className="w-8 h-8" />
+              </button>
+              <span />
+              <button onClick={() => moveSelected(-0.25, 0)} aria-label="왼쪽으로" className="w-16 h-16 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 flex items-center justify-center">
+                <ArrowLeft className="w-8 h-8" />
+              </button>
+              <button onClick={() => moveSelected(0, 0.25)} aria-label="아래로" className="w-16 h-16 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 flex items-center justify-center">
+                <ArrowDown className="w-8 h-8" />
+              </button>
+              <button onClick={() => moveSelected(0.25, 0)} aria-label="오른쪽으로" className="w-16 h-16 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 flex items-center justify-center">
+                <ArrowRight className="w-8 h-8" />
+              </button>
+            </div>
+
+            <div className={`grid grid-cols-2 gap-2 ${selectedItem ? '' : 'opacity-40 pointer-events-none'}`}>
+              <button onClick={() => rotateSelected(-90)} className="h-14 rounded-xl bg-slate-100 hover:bg-slate-200 text-base font-bold flex items-center justify-center gap-1.5">
+                <RotateCcw className="w-5 h-5" /> 왼쪽으로 90°
+              </button>
+              <button onClick={() => rotateSelected(90)} className="h-14 rounded-xl bg-slate-100 hover:bg-slate-200 text-base font-bold flex items-center justify-center gap-1.5">
+                <RotateCw className="w-5 h-5" /> 오른쪽으로 90°
+              </button>
+              <button onClick={() => rotateSelected(-15)} className="h-12 rounded-xl bg-slate-50 border border-slate-200 hover:bg-slate-100 text-base font-semibold">
+                조금 왼쪽 (15°)
+              </button>
+              <button onClick={() => rotateSelected(15)} className="h-12 rounded-xl bg-slate-50 border border-slate-200 hover:bg-slate-100 text-base font-semibold">
+                조금 오른쪽 (15°)
+              </button>
+              <button onClick={deleteSelected} className="col-span-2 h-14 rounded-xl bg-rose-50 border-2 border-rose-200 hover:bg-rose-100 text-rose-700 text-base font-bold flex items-center justify-center gap-2">
+                <Trash2 className="w-5 h-5" /> 이 장비 치우기
+              </button>
+            </div>
+
+            {items.length > 0 && (
+              <div className="pt-2 border-t border-slate-200">
+                <p className="text-base font-bold text-slate-700 mb-2">놓인 장비</p>
+                <div className="flex flex-wrap gap-2">
+                  {items.map((i) => (
+                    <button
+                      key={i.uid}
+                      onClick={() => setSelectedUid(i.uid)}
+                      className={`h-11 px-3 rounded-full border-2 text-base font-semibold ${
+                        i.uid === selectedUid ? 'border-sky-500 bg-sky-50 text-sky-900' : 'border-slate-200 bg-white text-slate-700'
+                      }`}
+                    >
+                      {gearEmoji(i)} {i.name.split(' (')[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="card rounded-2xl p-4 space-y-3">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <Tent className="w-6 h-6 text-emerald-600" /> 장비 꺼내기
+            </h2>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                ['tent', '⛺ 텐트'],
+                ['tarp', '⛱️ 타프'],
+                ['etc', '🚙 기타'],
+              ] as [GearTab, string][]).map(([id, label]) => (
                 <button
-                  key={preset.id}
-                  onClick={() => handleAddGear(preset)}
-                  className="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-800/90 text-left transition group"
+                  key={id}
+                  onClick={() => setGearTab(id)}
+                  className={`h-12 rounded-xl border-2 text-base font-bold ${
+                    gearTab === id ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-slate-300 text-slate-700'
+                  }`}
                 >
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">
-                        {preset.badge}
-                      </span>
-                      <span className="text-xs font-semibold text-slate-100 group-hover:text-emerald-300">
-                        {preset.name}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      규격 {preset.widthM}m × {preset.lengthM}m
-                      {preset.ropeMarginM > 0 ? ` (스트링 +${preset.ropeMarginM}m)` : ''}
-                    </p>
-                  </div>
-                  <Plus className="w-4 h-4 text-slate-500 group-hover:text-emerald-400 shrink-0" />
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="space-y-2">
+              {gearList.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={() => addGear(g)}
+                  className="w-full flex items-center gap-3 rounded-xl border-2 border-slate-200 hover:border-emerald-400 bg-white px-3 py-3 text-left"
+                >
+                  <span className="text-3xl">{gearEmoji(g)}</span>
+                  <span className="flex-1">
+                    <span className="block text-base font-bold text-slate-900">{g.name}</span>
+                    <span className="block text-sm text-slate-500">
+                      {g.widthM}m × {g.lengthM}m
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-1 text-emerald-700 font-bold text-base">
+                    <Plus className="w-5 h-5" /> 추가
+                  </span>
                 </button>
               ))}
             </div>
 
-            {/* Custom Gear Form */}
-            <form onSubmit={handleAddCustomGear} className="pt-2 border-t border-slate-800 space-y-2">
-              <p className="text-xs font-semibold text-slate-300">내 텐트 직접 입력 추가</p>
-              <input
-                type="text"
-                placeholder="예: 코오롱 슈퍼팰리스"
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number"
-                  step="0.1"
-                  placeholder="가로(m)"
-                  value={customWidthM}
-                  onChange={(e) => setCustomWidthM(Number(e.target.value))}
-                  className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white"
-                />
-                <input
-                  type="number"
-                  step="0.1"
-                  placeholder="세로(m)"
-                  value={customLengthM}
-                  onChange={(e) => setCustomLengthM(Number(e.target.value))}
-                  className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white"
-                />
-              </div>
-              <button
-                type="submit"
-                className="w-full py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300 border border-slate-700 transition"
-              >
-                + 커스텀 텐트 캔버스에 올리기
-              </button>
-            </form>
-          </div>
-        </section>
-
-        {/* CENTER PANEL: Interactive 2D Pitching & Weather Canvas (6 cols) */}
-        <section className="lg:col-span-6 flex flex-col space-y-3">
-          {/* Smart Pitching Real-Time Alert Banners */}
-          <div className="space-y-1.5">
-            {analysis.bodyOutItems.length > 0 && (
-              <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs">
-                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>
-                  <strong>[데크 이탈 경고]</strong>{' '}
-                  {analysis.bodyOutItems.map((i) => i.name).join(', ')} 본체가 사이트 영역 밖으로 나갔습니다! 회전하거나 위치를 조정하세요.
-                </span>
-              </div>
-            )}
-
-            {analysis.endangeredTarps.length > 0 && (
-              <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs">
-                <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>
-                  <strong>[돌풍 & 타프 파손 경고]</strong> 예상 최대풍속이 <strong>{windGustMs}m/s</strong>입니다! 타프 폴대 파손 위험이 높으니 설치를 피하거나 메인폴 스트링을 2줄씩 보강하세요.
-                </span>
-              </div>
-            )}
-
-            {analysis.fireSparkWarning && (
-              <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-orange-500/20 border border-orange-500/50 text-orange-200 text-xs">
-                <Flame className="w-4 h-4 text-orange-400 shrink-0" />
-                <span>
-                  <strong>[불티(불빵) 위험!]</strong> 현재 바람이 화로대에서 텐트 방향으로 불고 있습니다. 화로대를 바람 아래쪽(풍하측)으로 옮기세요!
-                </span>
-              </div>
-            )}
-
-            {analysis.bodyOutItems.length === 0 &&
-              analysis.endangeredTarps.length === 0 &&
-              !analysis.fireSparkWarning && (
-                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>
-                    <strong>[스마트 피칭 양호]</strong> 모든 장비가 사이트 내에 안정적으로 배치되었으며 풍향 대비 화로대 안전거리도 확보되었습니다.
-                  </span>
-                </div>
-              )}
-          </div>
-
-          {/* Canvas Container */}
-          <div className="glass-card rounded-2xl p-4 flex-1 flex flex-col items-center justify-between relative overflow-hidden">
-            {/* Top Bar inside Canvas: Compass, Wind Indicator, Selected Gear Controls */}
-            <div className="w-full flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80 z-10">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
-                  <Compass className="w-4 h-4 text-emerald-400" />
-                  <span>방위: 북쪽(N) 상단</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-sky-300 bg-sky-950/50 px-2.5 py-1 rounded-lg border border-sky-800/60">
-                  <Wind className="w-4 h-4 text-sky-400" />
-                  <span>돌풍 {windGustMs}m/s</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300 bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-800/50">
-                  <Sun className="w-4 h-4 text-amber-400" />
-                  <span>태양 {sunHour}:00</span>
-                </div>
-              </div>
-
-              {/* Selected Item Toolbar */}
-              {selectedItem ? (
-                <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-700">
-                  <span className="text-xs font-bold text-emerald-400 mr-1">{selectedItem.name}</span>
-                  <button
-                    onClick={() => rotateSelected(-15)}
-                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1"
-                    title="반시계 15도 회전"
-                  >
-                    <RotateCw className="w-3.5 h-3.5 -scale-x-100" /> -15°
-                  </button>
-                  <button
-                    onClick={() => rotateSelected(15)}
-                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1"
-                    title="시계방향 15도 회전"
-                  >
-                    <RotateCw className="w-3.5 h-3.5" /> +15°
-                  </button>
-                  <button
-                    onClick={deleteSelected}
-                    className="p-1 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 ml-1"
-                    title="삭제"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ) : (
-                <span className="text-xs text-slate-500">장비를 클릭해 드래그 이동 및 15° 회전하세요</span>
-              )}
-            </div>
-
-            {/* Interactive 2D Board */}
-            <div className="my-auto py-4 overflow-auto max-w-full flex items-center justify-center">
-              <div
-                ref={canvasRef}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                onPointerLeave={handlePointerUp}
-                onClick={() => setSelectedUid(null)}
-                style={{
-                  width: (siteWidthM + CANVAS_PADDING_M * 2) * SCALE_PX_PER_M,
-                  height: (siteLengthM + CANVAS_PADDING_M * 2) * SCALE_PX_PER_M,
-                }}
-                className="canvas-ground relative rounded-xl border border-slate-700/60 shadow-inner select-none touch-none overflow-hidden"
-              >
-                {/* Animated Wind Streak Overlay (density & speed follow gust strength) */}
-                <div
-                  className="absolute -inset-1/2 pointer-events-none z-0 flex items-center justify-around"
-                  style={{
-                    transform: `rotate(${windDirDeg}deg)`,
-                    opacity: Math.min(0.75, 0.2 + windGustMs / 24),
-                  }}
-                >
-                  {Array.from({ length: 14 }).map((_, col) => (
-                    <div
-                      key={col}
-                      className="wind-streak"
-                      style={{
-                        animationDuration: `${Math.max(0.9, 3.4 - windGustMs / 6)}s`,
-                        animationDelay: `${(col % 5) * -0.55}s`,
-                        marginTop: `${((col * 37) % 11) * 22 - 110}px`,
-                      }}
-                    />
-                  ))}
-                </div>
-
-                {/* Sun Position Badge on Perimeter */}
-                <div
-                  className="absolute z-10 pointer-events-none flex items-center gap-1 px-2 py-1 rounded-full bg-amber-500/20 border border-amber-400/50 text-amber-300 text-[11px] font-bold shadow"
-                  style={{
-                    left: '50%',
-                    top: '14px',
-                    transform: `translateX(-50%) rotate(${sunAzimuthDeg - 180}deg) translateY(6px)`,
-                  }}
-                >
-                  <Sun className="w-3.5 h-3.5 text-amber-400" />
-                  햇빛 방향 ({sunHour}시)
-                </div>
-
-                {/* Compass Rose (north is always up) */}
-                <div className="absolute top-2 right-2 z-10 pointer-events-none w-12 h-12 rounded-full bg-slate-950/70 border border-slate-600/70 flex items-center justify-center">
-                  <span className="absolute top-0.5 text-[9px] font-extrabold text-rose-400">N</span>
-                  <span className="absolute bottom-0.5 text-[9px] font-bold text-slate-400">S</span>
-                  <span className="absolute left-1 text-[9px] font-bold text-slate-400">W</span>
-                  <span className="absolute right-1 text-[9px] font-bold text-slate-400">E</span>
-                  <div
-                    className="w-0.5 h-6 rounded bg-gradient-to-b from-rose-400 to-slate-500"
-                    style={{ transform: `rotate(${windDirDeg}deg)` }}
-                    title={`바람이 향하는 방향 ${windDirDeg}°`}
+            {gearTab === 'tent' && (
+              <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <summary className="cursor-pointer text-base font-bold text-slate-800">내 텐트가 없나요? 크기를 직접 넣기</summary>
+                <form onSubmit={addCustomTent} className="mt-3 space-y-2">
+                  <input
+                    value={customName}
+                    onChange={(e) => setCustomName(e.target.value)}
+                    placeholder="텐트 이름 (예: 코오롱 슈퍼팰리스)"
+                    className="w-full h-12 rounded-xl border-2 border-slate-300 px-3 text-base"
                   />
-                </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-sm font-semibold text-slate-600">
+                      가로(m)
+                      <input type="number" step="0.1" min="0.5" value={customWidthM} onChange={(e) => setCustomWidthM(Number(e.target.value))} className="mt-1 w-full h-12 rounded-xl border-2 border-slate-300 px-3 text-base" />
+                    </label>
+                    <label className="text-sm font-semibold text-slate-600">
+                      세로(m)
+                      <input type="number" step="0.1" min="0.5" value={customLengthM} onChange={(e) => setCustomLengthM(Number(e.target.value))} className="mt-1 w-full h-12 rounded-xl border-2 border-slate-300 px-3 text-base" />
+                    </label>
+                  </div>
+                  <button type="submit" className="w-full h-12 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-base font-bold">
+                    내 텐트 올리기
+                  </button>
+                </form>
+              </details>
+            )}
 
-                {/* Scale Bar (1m = SCALE_PX_PER_M px) */}
-                <div className="absolute bottom-2 left-3 z-10 pointer-events-none flex items-end gap-1.5 text-[10px] font-semibold text-slate-300">
-                  <div
-                    className="h-1.5 border-x border-b border-slate-300"
-                    style={{ width: SCALE_PX_PER_M * 2 }}
-                  />
-                  <span>2m</span>
-                </div>
+            <button
+              onClick={() => {
+                setItems([]);
+                setSelectedUid(null);
+              }}
+              className="w-full h-11 rounded-xl border border-slate-300 text-slate-600 text-base font-semibold hover:bg-slate-50"
+            >
+              모두 치우고 처음부터
+            </button>
+          </div>
+        </div>
+      </div>
 
-                {/* Actual Site Boundary (Deck / Gravel / Grass) */}
-                <div
-                  style={{
-                    left: CANVAS_PADDING_M * SCALE_PX_PER_M,
-                    top: CANVAS_PADDING_M * SCALE_PX_PER_M,
-                    width: siteWidthM * SCALE_PX_PER_M,
-                    height: siteLengthM * SCALE_PX_PER_M,
-                    ['--grid' as string]: `${SCALE_PX_PER_M}px`,
-                  }}
-                  className={`absolute rounded-lg transition-colors ${
-                    surfaceType === 'deck'
-                      ? 'surface-deck'
-                      : surfaceType === 'gravel'
-                      ? 'surface-gravel'
-                      : 'surface-grass'
+      {renderVerdict(true)}
+    </div>
+  );
+
+  // ---------- 4단계 화면 ----------
+  const rainText = analysis.rainLevel === 'ok' ? '비 걱정 없어요' : analysis.rainLevel === 'warn' ? '비가 조금 올 수 있어요' : '비가 올 가능성이 커요';
+  const windText = analysis.windLevel === 'ok' ? '안전해요' : analysis.windLevel === 'warn' ? '조심하세요' : '매우 위험해요';
+  const coldText = analysis.coldLevel === 'ok' ? '포근해요' : analysis.coldLevel === 'warn' ? '쌀쌀해요' : '매우 추워요';
+  const dewText = analysis.dewLevel === 'ok' ? '쾌적해요' : analysis.dewLevel === 'warn' ? '약간 젖을 수 있어요' : '많이 젖어요';
+
+  const renderStep4 = () => (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-lg font-bold text-slate-800">
+          📍 {placeLabel} {dateLabel && <span className="text-slate-500 font-semibold">· {dateLabel}</span>}
+        </p>
+        <div className="flex gap-2 no-print">
+          <button onClick={copySummary} className="h-12 px-4 rounded-xl bg-yellow-300 hover:bg-yellow-200 text-slate-900 text-base font-bold flex items-center gap-2">
+            {copied ? <Check className="w-5 h-5" /> : <Copy className="w-5 h-5" />}
+            {copied ? '복사했어요! 카톡에 붙여넣기' : '카톡으로 보내기용 복사'}
+          </button>
+          <button onClick={() => window.print()} className="h-12 px-4 rounded-xl bg-white border-2 border-slate-300 hover:bg-slate-50 text-base font-bold flex items-center gap-2">
+            <Printer className="w-5 h-5" /> 인쇄
+          </button>
+        </div>
+      </div>
+
+      {renderVerdict(false)}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <IndexCard icon={<Wind className="w-5 h-5" />} title="바람" level={analysis.windLevel} value={windText} sub={`순간 ${windGustMs}m/s · ${windFromLabel(windDirDeg)}`} />
+        <IndexCard icon={<CloudRain className="w-5 h-5" />} title="비" level={analysis.rainLevel} value={rainText} sub={`올 확률 ${rainProbPct}% · 예상 ${rainMm}mm`} />
+        <IndexCard icon={<Thermometer className="w-5 h-5" />} title="새벽 기온" level={analysis.coldLevel} value={`${minTempC}℃ · ${coldText}`} sub={`해발 ${elevationM}m 지점 예보`} />
+        <IndexCard icon={<Droplets className="w-5 h-5" />} title="텐트 안 이슬" level={analysis.dewLevel} value={dewText} sub={`습도 ${humidityPct}% · 이슬점 ${analysis.dewPointC}℃`} />
+        <IndexCard
+          icon={<Sparkles className="w-5 h-5" />}
+          title="별 보기"
+          level={analysis.starScore >= 70 ? 'ok' : analysis.starScore >= 40 ? 'warn' : 'danger'}
+          value={`${analysis.starScore}점`}
+          sub={`저녁 구름 ${cloudCoverPct}%`}
+        />
+        <IndexCard
+          icon={<Zap className="w-5 h-5" />}
+          title="전기 릴선"
+          level={analysis.cordM !== null && analysis.cordM > 15 ? 'warn' : 'ok'}
+          value={analysis.cordM !== null ? `약 ${analysis.cordM}m 필요` : '배전반 없음'}
+          sub={analysis.cordM !== null ? '배전반~텐트 거리에 여유 포함' : '3단계에서 배전반을 놓으면 계산해요'}
+        />
+      </div>
+
+      <div className="card rounded-2xl p-4 space-y-3">
+        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <Zap className="w-6 h-6 text-amber-500" /> 챙길 준비물 <span className="text-base font-normal text-slate-500">(챙기면 눌러서 체크하세요)</span>
+        </h2>
+        <ul className="space-y-2">
+          {analysis.checklist.map((c) => {
+            const on = !!checked[c.item];
+            return (
+              <li key={c.item}>
+                <button
+                  onClick={() => setChecked((prev) => ({ ...prev, [c.item]: !prev[c.item] }))}
+                  className={`w-full flex items-start gap-3 rounded-xl border-2 px-3.5 py-3 text-left ${
+                    on ? 'border-emerald-300 bg-emerald-50' : c.urgent ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'
                   }`}
                 >
-                  <div className="absolute -top-6 left-0 text-xs font-bold text-slate-300 flex items-center gap-2">
-                    <span>
-                      사이트 영역: {siteWidthM}m × {siteLengthM}m (
-                      {surfaceType === 'deck' ? '우드 데크' : surfaceType === 'gravel' ? '파쇄석' : '잔디/노지'})
+                  <span className={`mt-0.5 w-8 h-8 shrink-0 rounded-lg border-2 flex items-center justify-center ${on ? 'bg-emerald-600 border-emerald-600 text-white' : 'bg-white border-slate-400'}`}>
+                    {on && <Check className="w-5 h-5" strokeWidth={3} />}
+                  </span>
+                  <span className="flex-1">
+                    <span className={`block text-lg font-bold ${on ? 'text-slate-500 line-through' : 'text-slate-900'}`}>
+                      {c.item}
+                      {c.urgent && !on && <span className="ml-2 align-middle text-sm px-2 py-0.5 rounded-full bg-amber-500 text-white">꼭 챙기세요</span>}
                     </span>
-                    <span className="text-[11px] text-slate-500">(격자 1칸 = 1m × 1m)</span>
-                  </div>
-                </div>
-
-                {/* Power Line Visualizer (if Power Box & Tent exist) */}
-                {(() => {
-                  const pBox = items.find((i) => i.id === 'power-box');
-                  const mainTent = items.find((i) => i.category === 'tent');
-                  if (!pBox || !mainTent) return null;
-                  const x1 = (pBox.xM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-                  const y1 = (pBox.yM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-                  const x2 = (mainTent.xM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-                  const y2 = (mainTent.yM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-                  return (
-                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
-                      <line
-                        x1={x1}
-                        y1={y1}
-                        x2={x2}
-                        y2={y2}
-                        stroke="#eab308"
-                        strokeWidth="2"
-                        strokeDasharray="5,5"
-                      />
-                    </svg>
-                  );
-                })()}
-
-                {/* Placed Gear Items */}
-                {items.map((item) => {
-                  const bodyOut = isBodyOutOfSite(item);
-                  const ropeOut = isRopeOutOfSite(item);
-                  const isTarpDanger = item.category === 'tarp' && windGustMs >= item.windLimitMs;
-                  const isSelected = item.uid === selectedUid;
-
-                  const centerPxX = (item.xM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-                  const centerPxY = (item.yM + CANVAS_PADDING_M) * SCALE_PX_PER_M;
-                  const widthPx = item.widthM * SCALE_PX_PER_M;
-                  const lengthPx = item.lengthM * SCALE_PX_PER_M;
-                  const ropePx = item.ropeMarginM * SCALE_PX_PER_M;
-
-                  // Cast a shadow away from the sun; offset is rotated back into the item's local frame.
-                  const sunRad = (sunAzimuthDeg * Math.PI) / 180;
-                  const shadowLen = 5 + (18 * Math.abs(sunHour - 13)) / 5;
-                  const sx = -Math.sin(sunRad) * shadowLen;
-                  const sy = Math.cos(sunRad) * shadowLen;
-                  const rot = (item.rotation * Math.PI) / 180;
-                  const lx = sx * Math.cos(rot) + sy * Math.sin(rot);
-                  const ly = -sx * Math.sin(rot) + sy * Math.cos(rot);
-                  const shadow = `${lx.toFixed(1)}px ${ly.toFixed(1)}px ${(shadowLen * 0.9).toFixed(1)}px rgba(0,0,0,0.5)`;
-
-                  return (
-                    <div
-                      key={item.uid}
-                      onPointerDown={(e) => handlePointerDown(e, item)}
-                      onClick={(e) => e.stopPropagation()}
-                      style={{
-                        left: centerPxX - widthPx / 2,
-                        top: centerPxY - lengthPx / 2,
-                        width: widthPx,
-                        height: lengthPx,
-                        transform: `rotate(${item.rotation}deg)`,
-                      }}
-                      className={`absolute z-20 cursor-grab active:cursor-grabbing flex flex-col items-center justify-center rounded-md transition-shadow ${
-                        isSelected ? 'ring-2 ring-white shadow-xl' : 'shadow-md'
-                      }`}
-                    >
-                      {/* Guyrope Safety Radius Box */}
-                      {showGuyropes && item.ropeMarginM > 0 && (
-                        <div
-                          style={{
-                            left: -ropePx,
-                            top: -ropePx,
-                            right: -ropePx,
-                            bottom: -ropePx,
-                          }}
-                          className={`absolute rounded-lg border border-dashed pointer-events-none ${
-                            ropeOut
-                              ? 'border-amber-400 bg-amber-500/10'
-                              : 'border-slate-400/50 bg-slate-100/5'
-                          }`}
-                        >
-                          <span className="absolute top-0.5 left-1 text-[9px] text-slate-300/80">
-                            스트링 영역 (+{item.ropeMarginM}m)
-                          </span>
-                        </div>
-                      )}
-
-                      {/* Main Gear Body */}
-                      <div
-                        style={{ backgroundColor: item.color, boxShadow: shadow }}
-                        className={`gear-body ${
-                          item.category === 'tent'
-                            ? 'gear-tent'
-                            : item.category === 'tarp'
-                            ? 'gear-tarp'
-                            : item.category === 'fire'
-                            ? 'gear-round gear-fire'
-                            : item.id === 'tree-obstacle'
-                            ? 'gear-round'
-                            : ''
-                        } w-full h-full rounded-md border-2 flex flex-col items-center justify-center p-1 text-center relative ${
-                          bodyOut
-                            ? 'border-rose-500 ring-2 ring-rose-500/60'
-                            : isTarpDanger
-                            ? 'border-amber-400 ring-2 ring-amber-400/60'
-                            : 'border-white/40'
-                        }`}
-                      >
-                        {/* Front Entrance Indicator for Tents */}
-                        {item.category === 'tent' && (
-                          <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.2 bg-slate-950 text-emerald-300 text-[9px] font-bold rounded border border-emerald-400/60">
-                            ▼ 출입구
-                          </div>
-                        )}
-
-                        <span className="text-[11px] font-extrabold text-white drop-shadow leading-tight">
-                          {item.name}
-                        </span>
-                        <span className="text-[10px] text-white/90 font-medium">
-                          {item.widthM}×{item.lengthM}m ({item.rotation}°)
-                        </span>
-
-                        {bodyOut && (
-                          <span className="mt-0.5 px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9px] font-bold">
-                            데크 이탈!
-                          </span>
-                        )}
-                        {!bodyOut && ropeOut && showGuyropes && (
-                          <span className="mt-0.5 px-1.5 py-0.5 rounded bg-amber-600 text-white text-[9px] font-bold">
-                            오징어펙 필요
-                          </span>
-                        )}
-                        {isTarpDanger && (
-                          <span className="mt-0.5 px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9px] font-bold animate-pulse">
-                            🌪️ 강풍 위험
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Bottom Weather & Sun Simulation Controls */}
-            <div className="w-full pt-3 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-3 z-10">
-              <div className="bg-slate-950/90 p-2.5 rounded-xl border border-slate-800">
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-400 font-medium">💨 풍향 설정</span>
-                  <span className="text-sky-400 font-bold">{windDirDeg}°</span>
-                </div>
-                <select
-                  value={windDirDeg}
-                  onChange={(e) => setWindDirDeg(Number(e.target.value))}
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white"
-                >
-                  {WIND_DIRECTIONS.map((w) => (
-                    <option key={w.deg} value={w.deg}>
-                      {w.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="bg-slate-950/90 p-2.5 rounded-xl border border-slate-800">
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-400 font-medium">🌪️ 최대 순간풍속(돌풍)</span>
-                  <span className={`font-bold ${windGustMs >= 9 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                    {windGustMs} m/s
+                    <span className="block text-base text-slate-600">{c.reason}</span>
                   </span>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="18"
-                  step="0.5"
-                  value={windGustMs}
-                  onChange={(e) => setWindGustMs(Number(e.target.value))}
-                  className="w-full accent-sky-500"
-                />
-              </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
 
-              <div className="bg-slate-950/90 p-2.5 rounded-xl border border-slate-800">
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-400 font-medium">☀️ 태양 시간대 (그늘 확인)</span>
-                  <span className="text-amber-400 font-bold">{sunHour}:00 시</span>
-                </div>
-                <input
-                  type="range"
-                  min="8"
-                  max="18"
-                  step="1"
-                  value={sunHour}
-                  onChange={(e) => setSunHour(Number(e.target.value))}
-                  className="w-full accent-amber-500"
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* RIGHT PANEL: 4 Camping Weather Indices & Auto Packing List (3 cols) */}
-        <section className="lg:col-span-3 space-y-4 flex flex-col">
-          {/* Weather Sliders (Temp & Humidity) */}
-          <div className="glass-card rounded-xl p-4 space-y-3">
-            <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <CloudSun className="w-4 h-4 text-emerald-400" />
-              3. 캠핑 기상 지수 시뮬레이션
-            </h2>
-
-            <div className="space-y-2">
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-400">평지 예보 최저기온</span>
-                  <span className="text-white font-semibold">{minTempC}℃</span>
-                </div>
-                <input
-                  type="range"
-                  min="-10"
-                  max="25"
-                  value={minTempC}
-                  onChange={(e) => setMinTempC(Number(e.target.value))}
-                  className="w-full accent-emerald-500"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-400">새벽 상대습도 (결로 연동)</span>
-                  <span className="text-sky-300 font-semibold">{humidityPct}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="30"
-                  max="100"
-                  value={humidityPct}
-                  onChange={(e) => setHumidityPct(Number(e.target.value))}
-                  className="w-full accent-sky-500"
-                />
-              </div>
-            </div>
-
-            {/* 4 Major Indices Cards */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              {/* 1. Wind / Peg Index */}
-              <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-sky-400">
-                  <Wind className="w-3.5 h-3.5" /> 타프/팩다운 지수
-                </div>
-                <p className="text-sm font-bold text-white mt-1">
-                  {windGustMs >= 11 ? '위험 (타프 금지)' : windGustMs >= 8 ? '주의 (보강 필수)' : '양호 (안정)'}
-                </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">돌풍 {windGustMs}m/s 예보</p>
-              </div>
-
-              {/* 2. Condensation Index */}
-              <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
-                  <Droplets className="w-3.5 h-3.5" /> 새벽 결로 지수
-                </div>
-                <p className="text-sm font-bold text-white mt-1">
-                  {humidityPct >= 80 ? '매우 높음' : humidityPct >= 65 ? '보통' : '쾌적'}
-                </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">이슬점 {analysis.dewPointC}℃</p>
-              </div>
-
-              {/* 3. Elevation Heating Index */}
-              <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-orange-400">
-                  <Flame className="w-3.5 h-3.5" /> 고도보정 체감온도
-                </div>
-                <p className="text-sm font-bold text-white mt-1">{analysis.realFeelMinTempC}℃</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  해발 {selectedCampground.elevationM}m (-{analysis.elevationDropC}℃)
-                </p>
-              </div>
-
-              {/* 4. Stargazing & Power Cord */}
-              <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-400">
-                  <Sparkles className="w-3.5 h-3.5" /> 별보기 / 릴선
-                </div>
-                <p className="text-sm font-bold text-white mt-1">별 지수 {analysis.starScore}점</p>
-                <p className="text-[11px] text-amber-300 mt-0.5">
-                  ⚡ 릴선: {analysis.maxPowerDistanceM ? `최소 ${analysis.maxPowerDistanceM}m` : '배전반 없음'}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Auto-Generated Smart Packing Checklist */}
-          <div className="glass-card rounded-xl p-4 space-y-3 flex-1 flex flex-col">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-                <Zap className="w-4 h-4 text-amber-400" />
-                4. 배치+날씨 맞춤 장비 추천
-              </h2>
-              <span className="text-[11px] text-emerald-400 font-semibold">자동 생성됨</span>
-            </div>
-
-            <div className="space-y-2 flex-1 overflow-y-auto pr-1">
-              {analysis.checklist.map((c, idx) => (
-                <div
-                  key={idx}
-                  className={`p-2.5 rounded-xl border text-xs transition ${
-                    c.urgent
-                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-100'
-                      : 'bg-slate-950 border-slate-800 text-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-bold">
-                    <span>✓ {c.item}</span>
-                    {c.urgent && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/30 text-amber-300">
-                        필수 대비
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1">{c.reason}</p>
-                </div>
+      <details className="card rounded-2xl p-4 no-print">
+        <summary className="cursor-pointer text-lg font-bold text-slate-800">⚙️ 날씨 수치를 직접 바꿔 보고 싶으세요? (눌러서 열기)</summary>
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <label className="block text-base font-semibold text-slate-700">
+            순간 바람 세기: <span className="text-sky-700 text-xl">{windGustMs}m/s</span>
+            <input type="range" min={1} max={18} step={0.5} value={windGustMs} onChange={(e) => setWindGustMs(Number(e.target.value))} className="w-full h-10 accent-sky-500" />
+          </label>
+          <label className="block text-base font-semibold text-slate-700">
+            바람 방향
+            <select value={windDirDeg} onChange={(e) => setWindDirDeg(Number(e.target.value))} className="mt-1 w-full h-12 rounded-xl border-2 border-slate-300 px-3 text-base bg-white">
+              {WIND_OPTIONS.map((w) => (
+                <option key={w.toDeg} value={w.toDeg}>
+                  {w.label}
+                </option>
               ))}
-            </div>
+              {!WIND_OPTIONS.some((w) => w.toDeg === windDirDeg) && <option value={windDirDeg}>{windFromLabel(windDirDeg)}</option>}
+            </select>
+          </label>
+          <label className="block text-base font-semibold text-slate-700">
+            새벽 기온: <span className="text-sky-700 text-xl">{minTempC}℃</span>
+            <input type="range" min={-15} max={30} value={minTempC} onChange={(e) => setMinTempC(Number(e.target.value))} className="w-full h-10 accent-emerald-500" />
+          </label>
+          <label className="block text-base font-semibold text-slate-700">
+            새벽 습도: <span className="text-sky-700 text-xl">{humidityPct}%</span>
+            <input type="range" min={30} max={100} value={humidityPct} onChange={(e) => setHumidityPct(Number(e.target.value))} className="w-full h-10 accent-sky-500" />
+          </label>
+          <label className="block text-base font-semibold text-slate-700">
+            비 올 확률: <span className="text-sky-700 text-xl">{rainProbPct}%</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={rainProbPct}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setRainProbPct(v);
+                setRainMm(v >= 60 ? Math.max(rainMm, 10) : v >= 30 ? Math.max(Math.min(rainMm, 5), 1) : 0);
+              }}
+              className="w-full h-10 accent-sky-500"
+            />
+          </label>
+          <label className="block text-base font-semibold text-slate-700">
+            저녁 구름: <span className="text-sky-700 text-xl">{cloudCoverPct}%</span>
+            <input type="range" min={0} max={100} value={cloudCoverPct} onChange={(e) => setCloudCoverPct(Number(e.target.value))} className="w-full h-10 accent-slate-500" />
+          </label>
+        </div>
+      </details>
+    </div>
+  );
+
+  // ---------- 화면 틀 ----------
+  const canNext = step === 1 ? place !== null && weatherStatus !== 'loading' : true;
+  const nextLabel = step < 4 ? STEPS[step].label : '';
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <header className="no-print border-b border-slate-200 bg-white/90 backdrop-blur sticky top-0 z-40">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-sky-500 flex items-center justify-center text-white shadow">
+            <Tent className="w-7 h-7" />
           </div>
-        </section>
+          <div className="flex-1">
+            <h1 className="text-xl font-extrabold text-slate-900 leading-tight">
+              텐트리스 웨더 <span className="brand-gradient">Tentris Weather</span>
+            </h1>
+            <p className="text-base text-slate-600 leading-tight">캠핑 자리 배치와 날씨를 한눈에 확인해요</p>
+          </div>
+          {place && weatherStatus === 'ok' && day && (
+            <div className="hidden sm:block text-right text-base font-semibold text-slate-700">
+              📍 {place.name}
+              <br />
+              {weatherCodeInfo(day.code).emoji} {dateLabel}
+            </div>
+          )}
+        </div>
+
+        <nav className="max-w-5xl mx-auto px-4 pb-3 grid grid-cols-4 gap-2" aria-label="진행 단계">
+          {STEPS.map((s) => {
+            const active = s.n === step;
+            const done = s.n < step;
+            return (
+              <button
+                key={s.n}
+                onClick={() => setStep(s.n)}
+                aria-current={active ? 'step' : undefined}
+                className={`h-14 rounded-xl border-2 flex items-center justify-center gap-2 text-base font-bold px-1 ${
+                  active
+                    ? 'bg-emerald-600 border-emerald-600 text-white shadow'
+                    : done
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                    : 'bg-white border-slate-300 text-slate-600'
+                }`}
+              >
+                <span className={`w-7 h-7 rounded-full flex items-center justify-center text-sm shrink-0 ${active ? 'bg-white text-emerald-700' : done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                  {done ? <Check className="w-4 h-4" strokeWidth={3} /> : s.n}
+                </span>
+                <span className="leading-tight">{s.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </header>
+
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 pt-5 pb-32">
+        <h2 className="text-2xl font-extrabold text-slate-900 mb-4">
+          {step}단계. {step === 1 ? '어디로, 언제 가세요?' : step === 2 ? '자리(사이트) 크기를 알려 주세요' : step === 3 ? '장비를 자리에 놓아 보세요' : '결과와 준비물을 확인하세요'}
+        </h2>
+        {step === 1 && renderStep1()}
+        {step === 2 && renderStep2()}
+        {step === 3 && renderStep3()}
+        {step === 4 && renderStep4()}
       </main>
+
+      <footer className="no-print fixed bottom-0 inset-x-0 z-40 border-t border-slate-200 bg-white/95 backdrop-blur">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+          <button
+            onClick={() => setStep((s) => (Math.max(1, s - 1) as Step))}
+            disabled={step === 1}
+            className="h-14 px-5 rounded-xl border-2 border-slate-300 bg-white text-lg font-bold text-slate-700 flex items-center gap-1 disabled:opacity-30"
+          >
+            <ChevronLeft className="w-6 h-6" /> 이전
+          </button>
+          <div className="flex-1 text-center">
+            {step === 1 && !place && (
+              <button onClick={() => setStep(2)} className="text-base font-semibold text-slate-500 underline underline-offset-4">
+                날씨 없이 배치만 해볼게요
+              </button>
+            )}
+          </div>
+          {step < 4 ? (
+            <button
+              onClick={() => setStep((s) => (Math.min(4, s + 1) as Step))}
+              disabled={!canNext}
+              className="h-14 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-lg font-extrabold flex items-center gap-1 shadow disabled:opacity-40"
+            >
+              다음: {nextLabel} <ChevronRight className="w-6 h-6" />
+            </button>
+          ) : (
+            <button onClick={() => setStep(1)} className="h-14 px-6 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-lg font-extrabold">
+              처음부터 다시
+            </button>
+          )}
+        </div>
+      </footer>
     </div>
   );
 }
